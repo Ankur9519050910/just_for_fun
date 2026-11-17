@@ -1,0 +1,324 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+enum TripStatus {
+  PLANNING
+  CONFIRMED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum BookingType {
+  FLIGHT
+  HOTEL
+  ACTIVITY
+  COMBO
+}
+
+enum BookingStatus {
+  PENDING_APPROVAL
+  PAYMENT_PENDING
+  CONFIRMED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id            String          @id @default(uuid())
+  email         String          @unique
+  passwordHash  String
+  name          String
+  role          Role            @default(USER)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  preferences   UserPreference?
+  conversations Conversation[]
+  trips         Trip[]
+  tripMembers   TripMember[]
+  bookings      Booking[]
+  agentRuns     AgentRun[]
+
+  @@map("users")
+}
+
+model UserPreference {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  homeAirport       String?  // e.g. "CCU"
+  preferredAirlines String[] @default([])
+  hotelMinRating    Float    @default(3.5)
+  dietaryPref       String[] @default([])
+  travelPace        String   @default("BALANCED") // RELAXED, BALANCED, PACKED
+  currency          String   @default("INR")
+  updatedAt         DateTime @updatedAt
+
+  @@map("user_preferences")
+}
+
+model Conversation {
+  id        String     @id @default(uuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String     @default("New Trip Discussion")
+  tripId    String?
+  trip      Trip?      @relation(fields: [tripId], references: [id], onDelete: SetNull)
+  messages  Message[]
+  agentRuns AgentRun[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  content        String       @db.Text
+  toolCalls      Json?
+  toolCallId     String?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model Trip {
+  id            String         @id @default(uuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  destination   String
+  origin        String
+  startDate     DateTime
+  endDate       DateTime
+  totalDays     Int
+  travelers     Int            @default(1)
+  totalBudget   Decimal        @db.Decimal(12, 2)
+  currency      String         @default("INR")
+  status        TripStatus     @default(PLANNING)
+  metadata      Json?
+  conversations Conversation[]
+  members       TripMember[]
+  itineraries   Itinerary[]
+  flightOptions FlightOption[]
+  hotelOptions  HotelOption[]
+  bookings      Booking[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([userId, status])
+  @@map("trips")
+}
+
+model TripMember {
+  id        String   @id @default(uuid())
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   @default("COLLABORATOR")
+  createdAt DateTime @default(now())
+
+  @@unique([tripId, userId])
+  @@map("trip_members")
+}
+
+model Itinerary {
+  id         String              @id @default(uuid())
+  tripId     String
+  trip       Trip                @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  version    Int                 @default(1)
+  isApproved Boolean             @default(false)
+  summary    String              @db.Text
+  totalCost  Decimal             @db.Decimal(12, 2)
+  activities ItineraryActivity[]
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  @@index([tripId, isApproved])
+  @@map("itineraries")
+}
+
+model ItineraryActivity {
+  id            String    @id @default(uuid())
+  itineraryId   String
+  itinerary     Itinerary @relation(fields: [itineraryId], references: [id], onDelete: Cascade)
+  dayNumber     Int
+  timeSlot      String // MORNING, AFTERNOON, EVENING, NIGHT
+  startTime     String? // "09:00"
+  endTime       String? // "11:30"
+  title         String
+  description   String    @db.Text
+  locationName  String
+  latitude      Float
+  longitude     Float
+  estimatedCost Decimal   @default(0.0) @db.Decimal(10, 2)
+  category      String // SIGHTSEEING, DINING, ADVENTURE, RELAXATION, TRANSIT
+  bookingUrl    String?
+  sortOrder     Int       @default(0)
+
+  @@index([itineraryId, dayNumber])
+  @@map("itinerary_activities")
+}
+
+model FlightOption {
+  id             String   @id @default(uuid())
+  tripId         String
+  trip           Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  airlineCode    String
+  airlineName    String
+  flightNumber   String
+  originAirport  String
+  destAirport    String
+  departureTime  DateTime
+  arrivalTime    DateTime
+  durationMins   Int
+  stops          Int      @default(0)
+  cabinClass     String   @default("ECONOMY")
+  pricePerPerson Decimal  @db.Decimal(10, 2)
+  totalPrice     Decimal  @db.Decimal(10, 2)
+  currency       String   @default("INR")
+  offerReference String
+  isMockData     Boolean  @default(false)
+  isSelected     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@index([tripId, isSelected])
+  @@map("flight_options")
+}
+
+model HotelOption {
+  id            String   @id @default(uuid())
+  tripId        String
+  trip          Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  hotelName     String
+  hotelId       String
+  address       String
+  city          String
+  latitude      Float
+  longitude     Float
+  starRating    Float    @default(3.0)
+  userRating    Float    @default(4.0)
+  pricePerNight Decimal  @db.Decimal(10, 2)
+  totalPrice    Decimal  @db.Decimal(10, 2)
+  currency      String   @default("INR")
+  roomType      String
+  amenities     String[] @default([])
+  imageUrl      String?
+  isMockData    Boolean  @default(false)
+  isSelected    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([tripId, isSelected])
+  @@map("hotel_options")
+}
+
+model Booking {
+  id                  String        @id @default(uuid())
+  userId              String
+  user                User          @relation(fields: [userId], references: [id])
+  tripId              String
+  trip                Trip          @relation(fields: [tripId], references: [id])
+  type                BookingType
+  status              BookingStatus @default(PENDING_APPROVAL)
+  idempotencyKey      String        @unique
+  confirmationCode    String?
+  provider            String
+  providerRawResponse Json?
+  amount              Decimal       @db.Decimal(12, 2)
+  currency            String        @default("INR")
+  flightOptionId      String?
+  hotelOptionId       String?
+  approvalToken       String?       @unique
+  approvedAt          DateTime?
+  cancellationReason  String?
+  payment             Payment?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([userId, status])
+  @@index([tripId])
+  @@map("bookings")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  bookingId       String        @unique
+  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  paymentProvider String
+  transactionRef  String        @unique
+  amount          Decimal       @db.Decimal(12, 2)
+  currency        String        @default("INR")
+  status          PaymentStatus @default(PENDING)
+  receiptUrl      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("payments")
+}
+
+model ToolExecution {
+  id         String   @id @default(uuid())
+  agentRunId String
+  agentRun   AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+  toolName   String
+  inputArgs  Json
+  outputData Json?
+  error      String?
+  durationMs Int
+  createdAt  DateTime @default(now())
+
+  @@index([agentRunId, toolName])
+  @@map("tool_executions")
+}
+
+model AgentRun {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id])
+  conversationId String
+  conversation   Conversation    @relation(fields: [conversationId], references: [id])
+  triggerPrompt  String          @db.Text
+  status         String
+  totalTokens    Int             @default(0)
+  promptTokens   Int             @default(0)
+  compTokens     Int             @default(0)
+  costUsd        Decimal         @default(0.0) @db.Decimal(8, 6)
+  toolExecutions ToolExecution[]
+  createdAt      DateTime        @default(now())
+  completedAt    DateTime?
+
+  @@index([conversationId, status])
+  @@map("agent_runs")
+}

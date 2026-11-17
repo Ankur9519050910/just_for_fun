@@ -1,0 +1,29 @@
+{
+  "name": "ai-travel-companion",
+  "version": "1.0.0",
+  "description": "Autonomous AI-Powered Travel Planning and Booking Platform",
+  "private": true,
+  "scripts": {
+    "install:backend": "npm install --prefix backend",
+    "install:frontend": "npm install --prefix frontend",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build:backend": "npm run build --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "test:backend": "npm test --prefix backend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "keywords": [
+    "ai-agent",
+    "langgraph",
+    "travel-planner",
+    "amadeus",
+    "react",
+    "prisma",
+    "typescript"
+  ],
+  "author": "AI Travel Engineering Team",
+  "license": "MIT"
+}
