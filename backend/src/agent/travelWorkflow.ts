@@ -17,7 +17,7 @@ import { getCheckpointer } from './checkpointer';
 import { logger } from '../config/logger';
 import { SSEStreamHandler } from '../utils/sseStream';
 
-// Define typed channels using modern LangGraph Annotation
+// Define typed channels using LangGraph Annotation
 export const TravelStateAnnotation = Annotation.Root({
   userId: Annotation<string>(),
   conversationId: Annotation<string>(),
@@ -130,7 +130,7 @@ export class TravelAgentOrchestrator {
         };
       })
       .addNode('research_inventory', async (state: TravelWorkflowState) => {
-        logger.info('Node: research_inventory - Initiating verified inventory discovery', 'TravelWorkflow');
+        logger.info('Node: research_inventory - Initiating inventory discovery', 'TravelWorkflow');
         const intent = state.extractedIntent;
         const origin = intent.origin || 'CCU';
         const destination = intent.destination || 'Goa';
@@ -150,7 +150,7 @@ export class TravelAgentOrchestrator {
         // 1. Resolve Destination Coordinates
         const coords = await destinationProvider.getCoordinates(destination);
 
-        // 2. Query Flights & Hotels in parallel
+        // 2. Query Flights & Hotels concurrently
         const [flightRes, hotelRes, attractions, weather] = await Promise.all([
           flightService.searchFlights({
             originAirport: origin,
@@ -198,29 +198,51 @@ export class TravelAgentOrchestrator {
       .addNode('synthesize_plan', async (state: TravelWorkflowState) => {
         logger.info('Node: synthesize_plan - Generating structured summary and itinerary narrative', 'TravelWorkflow');
         const intent = state.extractedIntent;
-        const destination = intent.destination || 'Goa';
+        const destination = intent.destination || 'Selected Destination';
         const days = intent.totalDays || 5;
         const travelers = intent.travelers || 2;
         const budget = intent.totalBudget || 50000;
 
-        const bestFlight = state.flightResults[0];
-        const bestHotel = state.hotelResults[0];
+        const bestFlight = state.flightResults && state.flightResults.length > 0 ? state.flightResults[0] : null;
+        const bestHotel = state.hotelResults && state.hotelResults.length > 0 ? state.hotelResults[0] : null;
 
-        const flightCost = bestFlight ? bestFlight.totalPrice : 12400;
-        const hotelCost = bestHotel ? bestHotel.totalPrice : 16800;
-        const estTotal = flightCost + hotelCost + 8000; // includes activities & buffer
+        // Compute spend exclusively from actual found inventory - NEVER hardcode placeholder prices
+        const flightCost = bestFlight ? bestFlight.totalPrice : 0;
+        const hotelCost = bestHotel ? bestHotel.totalPrice : 0;
+        const estimatedActivities = state.attractionResults.reduce((acc, curr) => acc + (curr.estimatedCost || 0), 0);
+        const bufferEst = 5000;
+        const actualCommittedCost = flightCost + hotelCost;
+        const projectedTotal = actualCommittedCost + (estimatedActivities > 0 ? estimatedActivities : 3000) + bufferEst;
 
         const isMockFlights = state.flightResults.some((f) => f.isMockData);
         const isMockHotels = state.hotelResults.some((h) => h.isMockData);
 
-        const summary = `I have completed the travel research for your ${days}-day trip to ${destination} for ${travelers} traveler(s).
-• Flights: Found ${state.flightResults.length} options starting from ₹${bestFlight?.totalPrice.toLocaleString('en-IN') || '12,400'} (${bestFlight?.airlineName || 'IndiGo'}) [${bestFlight?.source || 'SIMULATED_MOCK_FIXTURE'}].
-• Hotels: Selected ${state.hotelResults.length} properties rated ≥${intent.hotelMinRating}★, led by ${bestHotel?.hotelName || 'Heritage Village Resort'} (₹${bestHotel?.totalPrice.toLocaleString('en-IN') || '16,800'} for ${days - 1} nights).
-• Weather: Expect ${state.weatherForecast[0]?.condition || 'pleasant sunshine'} with daytime highs of ~${state.weatherForecast[0]?.maxTempC || 32}°C.
-• Attractions: Curated ${state.attractionResults.length} experiences matching your interests (${intent.vibe.join(', ') || 'beaches, adventure, heritage, and local seafood'}).
-• Budget Projection: Estimated ₹${estTotal.toLocaleString('en-IN')} against your ₹${budget.toLocaleString('en-IN')} budget (${Math.round((estTotal / budget) * 100)}% allocation).
+        const flightSummary = bestFlight
+          ? `• Flights: Discovered ${state.flightResults.length} options. Recommended: ${bestFlight.airlineName} (${bestFlight.flightNumber}) at ₹${bestFlight.totalPrice.toLocaleString('en-IN')} (${bestFlight.source}).`
+          : `• Flights: No flights found matching the exact criteria. (Flight cost allocation: ₹0).`;
 
-${isMockFlights || isMockHotels ? '⚠️ Notice: One or more inventory sources are using deterministic simulation fixtures because live Amadeus test keys were unconfigured or in sandbox mode.' : '✅ Verified live inventory loaded.'}`;
+        const hotelSummary = bestHotel
+          ? `• Hotels: Discovered ${state.hotelResults.length} properties (≥${intent.hotelMinRating}★). Recommended: ${bestHotel.hotelName} at ₹${bestHotel.totalPrice.toLocaleString('en-IN')} for stay (${bestHotel.source}).`
+          : `• Hotels: No hotel inventory available for specified dates. (Hotel cost allocation: ₹0).`;
+
+        const weatherDesc = state.weatherForecast.length > 0
+          ? `• Weather: Expect ${state.weatherForecast[0].condition} with daytime highs around ${state.weatherForecast[0].maxTempC}°C.`
+          : `• Weather: Forecast data pending for dates.`;
+
+        const attractionsDesc = state.attractionResults.length > 0
+          ? `• Experiences: Curated ${state.attractionResults.length} activities matching interests (${intent.vibe.length > 0 ? intent.vibe.join(', ') : 'sightseeing and culture'}).`
+          : `• Experiences: Exploring local sights.`;
+
+        const budgetDesc = `• Budget Projection: Estimated total ₹${projectedTotal.toLocaleString('en-IN')} against target ₹${budget.toLocaleString('en-IN')} (${Math.round((projectedTotal / budget) * 100)}% allocation).`;
+
+        let provenanceNotice = '';
+        if (isMockFlights || isMockHotels) {
+          provenanceNotice = '\n\n⚠️ Inventory Notice: One or more inventory options are using deterministic simulation fixtures (SIMULATED_MOCK_FIXTURE) because live Amadeus test keys were unconfigured or sandbox criteria required simulated routes.';
+        } else if (state.flightResults.length > 0 || state.hotelResults.length > 0) {
+          provenanceNotice = '\n\n✅ Verified inventory loaded from live provider APIs.';
+        }
+
+        const summary = `I have completed the travel research for your ${days}-day trip to ${destination} for ${travelers} traveler(s).\n${flightSummary}\n${hotelSummary}\n${weatherDesc}\n${attractionsDesc}\n${budgetDesc}${provenanceNotice}`;
 
         return {
           summary,
@@ -260,12 +282,27 @@ ${isMockFlights || isMockHotels ? '⚠️ Notice: One or more inventory sources 
     const graph = await this.getGraph();
     const config = { configurable: { thread_id: input.threadId } };
 
-    // Emit initial workflow step
+    // Progressive SSE: Emit initial workflow step
     sseHandler?.emit('workflow_step', {
       step: 'analyze_intent',
       status: 'RUNNING',
-      description: 'Understanding your travel requirements and extracting destination details...'
+      description: 'Understanding your travel requirements and parsing constraints...'
     });
+
+    // Check existing state from checkpointer to guarantee multi-turn continuity
+    let mergedIntent = input.existingState?.extractedIntent;
+    try {
+      const savedState = await graph.getState(config);
+      if (savedState?.values?.extractedIntent) {
+        mergedIntent = {
+          ...savedState.values.extractedIntent,
+          ...(input.existingState?.extractedIntent || {})
+        };
+        logger.info(`Loaded existing thread intent from checkpointer: ${JSON.stringify(mergedIntent)}`, 'TravelWorkflow');
+      }
+    } catch (err: any) {
+      logger.warn('Could not read existing state from checkpointer', 'TravelWorkflow', err.message);
+    }
 
     const initialState: Partial<TravelWorkflowState> = {
       userId: input.userId,
@@ -273,65 +310,106 @@ ${isMockFlights || isMockHotels ? '⚠️ Notice: One or more inventory sources 
       threadId: input.threadId,
       userPrompt: input.userPrompt,
       messages: [{ role: 'user', content: input.userPrompt }],
-      extractedIntent: input.existingState?.extractedIntent,
+      extractedIntent: mergedIntent,
       ...input.existingState
     };
 
-    // Execute state graph
-    const finalState = await graph.invoke(initialState, config);
+    let latestState: TravelWorkflowState = initialState as TravelWorkflowState;
 
-    // Stream SSE events corresponding to state transitions
-    if (sseHandler && sseHandler.isConnected) {
-      if (finalState.status === 'NEED_INFO') {
-        sseHandler.emit('need_clarification', {
-          missingFields: finalState.missingInformation,
-          question: finalState.clarificationQuestion,
-          status: 'NEED_INFO'
-        });
-      } else {
-        sseHandler.emit('intent_extracted', {
-          intent: finalState.extractedIntent
-        });
+    // Genuine Progressive SSE Streaming:
+    // We stream node updates in real-time as each node finishes execution!
+    try {
+      const streamIterable = await graph.stream(initialState, {
+        ...config,
+        streamMode: 'updates'
+      });
 
-        sseHandler.emit('tool_start', {
-          tools: ['search_flights', 'search_hotels', 'get_weather', 'search_attractions']
-        });
+      for await (const chunk of streamIterable) {
+        // chunk is an object with { [nodeName]: nodeOutput }
+        const nodeName = Object.keys(chunk)[0];
+        const nodeOutput = chunk[nodeName];
 
-        if (finalState.providerErrors && finalState.providerErrors.length > 0) {
-          for (const err of finalState.providerErrors) {
-            sseHandler.emit('provider_error', err);
+        logger.info(`Node completed [stream update]: ${nodeName}`, 'TravelWorkflow');
+
+        if (nodeName === 'analyze_intent') {
+          if (nodeOutput.missingInformation && nodeOutput.missingInformation.length > 0) {
+            sseHandler?.emit('workflow_step', {
+              step: 'ask_clarification',
+              status: 'RUNNING',
+              description: 'Identifying missing details and formulating follow-up clarification...'
+            });
+          } else {
+            sseHandler?.emit('intent_extracted', {
+              intent: nodeOutput.extractedIntent
+            });
+            sseHandler?.emit('workflow_step', {
+              step: 'research_inventory',
+              status: 'RUNNING',
+              description: 'Searching flights, hotels, weather, and curated attractions...'
+            });
+            sseHandler?.emit('tool_start', {
+              tools: ['search_flights', 'search_hotels', 'get_weather', 'search_attractions']
+            });
           }
+        } else if (nodeName === 'ask_clarification') {
+          sseHandler?.emit('need_clarification', {
+            missingFields: nodeOutput.missingInformation || latestState.missingInformation,
+            question: nodeOutput.messages?.[0]?.content || "Could you please provide more details?",
+            status: 'NEED_INFO'
+          });
+        } else if (nodeName === 'research_inventory') {
+          if (nodeOutput.providerErrors && nodeOutput.providerErrors.length > 0) {
+            for (const err of nodeOutput.providerErrors) {
+              sseHandler?.emit('provider_error', err);
+            }
+          }
+
+          sseHandler?.emit('flight_results', {
+            flights: nodeOutput.flightResults || [],
+            count: (nodeOutput.flightResults || []).length,
+            source: nodeOutput.flightResults?.[0]?.source || 'SIMULATED_MOCK_FIXTURE'
+          });
+
+          sseHandler?.emit('hotel_results', {
+            hotels: nodeOutput.hotelResults || [],
+            count: (nodeOutput.hotelResults || []).length,
+            source: nodeOutput.hotelResults?.[0]?.source || 'SIMULATED_MOCK_FIXTURE'
+          });
+
+          sseHandler?.emit('destination_results', {
+            attractions: nodeOutput.attractionResults || [],
+            weather: nodeOutput.weatherForecast || []
+          });
+
+          sseHandler?.emit('workflow_step', {
+            step: 'synthesize_plan',
+            status: 'RUNNING',
+            description: 'Synthesizing travel plan and calculating budget allocations...'
+          });
+        } else if (nodeName === 'synthesize_plan') {
+          sseHandler?.emit('plan_ready', {
+            summary: nodeOutput.summary,
+            status: 'COMPLETED'
+          });
         }
 
-        sseHandler.emit('flight_results', {
-          flights: finalState.flightResults,
-          count: finalState.flightResults.length,
-          source: finalState.flightResults[0]?.source || 'SIMULATED_MOCK_FIXTURE'
-        });
-
-        sseHandler.emit('hotel_results', {
-          hotels: finalState.hotelResults,
-          count: finalState.hotelResults.length,
-          source: finalState.hotelResults[0]?.source || 'SIMULATED_MOCK_FIXTURE'
-        });
-
-        sseHandler.emit('destination_results', {
-          attractions: finalState.attractionResults,
-          weather: finalState.weatherForecast
-        });
-
-        sseHandler.emit('plan_ready', {
-          summary: finalState.summary,
-          status: 'COMPLETED'
-        });
+        // Keep local state up to date
+        latestState = { ...latestState, ...nodeOutput };
       }
-
-      sseHandler.emit('done', {
-        conversationId: input.conversationId,
-        threadId: input.threadId,
-        status: finalState.status
-      });
+    } catch (streamError: any) {
+      logger.error('Error during LangGraph stream execution', 'TravelWorkflow', streamError);
+      throw streamError;
     }
+
+    // Retrieve final snapshot from checkpointer
+    const finalSnapshot = await graph.getState(config);
+    const finalState = (finalSnapshot?.values || latestState) as TravelWorkflowState;
+
+    sseHandler?.emit('done', {
+      conversationId: input.conversationId,
+      threadId: input.threadId,
+      status: finalState.status
+    });
 
     return finalState;
   }

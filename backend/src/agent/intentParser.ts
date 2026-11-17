@@ -12,8 +12,53 @@ const CITY_AIRPORT_MAP: Record<string, string> = {
   bangalore: 'BLR',
   bengaluru: 'BLR',
   chennai: 'MAA',
-  hyderabad: 'HYD'
+  hyderabad: 'HYD',
+  jaipur: 'JAI',
+  coimbatore: 'CJB',
+  ahmedabad: 'AMD',
+  pune: 'PNQ',
+  kochi: 'COK',
+  paris: 'CDG',
+  london: 'LHR',
+  zurich: 'ZRH'
 };
+
+const MONTH_NAMES: Record<string, number> = {
+  january: 0,
+  february: 1,
+  march: 2,
+  april: 3,
+  may: 4,
+  june: 5,
+  july: 6,
+  august: 7,
+  september: 8,
+  october: 9,
+  november: 10,
+  december: 11,
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11
+};
+
+const AMBIGUOUS_ORIGIN_WORDS = [
+  'somewhere',
+  'anywhere',
+  'nowhere',
+  'home',
+  'here',
+  'place',
+  'undecided',
+  'unknown'
+];
 
 export class IntentParser {
   public parse(
@@ -39,10 +84,23 @@ export class IntentParser {
     };
 
     // 1. Destination Extraction
-    for (const city of ['goa', 'kolkata', 'delhi', 'mumbai', 'bangalore', 'chennai', 'hyderabad']) {
-      if (text.includes(city) && !text.includes(`from ${city}`)) {
+    let destFound = false;
+    for (const city of Object.keys(CITY_AIRPORT_MAP)) {
+      if (text.includes(city) && !text.includes(`from ${city}`) && !text.includes(`departing ${city}`) && !text.includes(`leaving ${city}`)) {
         intent.destination = city.charAt(0).toUpperCase() + city.slice(1);
+        destFound = true;
         break;
+      }
+    }
+
+    if (!destFound) {
+      const destRegex = /(?:trip|travel|holiday|vacation|tour|visit|going|heading)\s+(?:to|in|for)\s+([a-zA-Z\s]{2,25}?)(?=[,\.\?\!]|\s+(?:from|for|with|in|on|at|during|departing)|$)/i;
+      const match = prompt.match(destRegex);
+      if (match && match[1]) {
+        const candidate = match[1].trim();
+        if (!['a', 'the', 'my', 'two', 'three', 'four', 'us', 'me'].includes(candidate.toLowerCase())) {
+          intent.destination = candidate.charAt(0).toUpperCase() + candidate.slice(1);
+        }
       }
     }
 
@@ -54,68 +112,101 @@ export class IntentParser {
       }
     }
 
-    // If text mentions "from CCU" or 3-letter IATA bare
     const iataMatches = prompt.match(/\b([A-Z]{3})\b/g);
     if (iataMatches) {
       for (const iata of iataMatches) {
-        if (Object.values(CITY_AIRPORT_MAP).includes(iata)) {
-          if (!intent.origin && iata !== 'GOI') {
-            intent.origin = iata;
+        if (Object.values(CITY_AIRPORT_MAP).includes(iata) && iata !== 'GOI') {
+          intent.origin = iata;
+          break;
+        }
+      }
+    }
+
+    if (!intent.origin) {
+      const originMatch = prompt.match(/(?:from|departing|leaving)\s+([a-zA-Z\s]{2,20}?)(?=[,\.\?\!]|\s+(?:to|for|with|in|on|at)|$)/i);
+      if (originMatch && originMatch[1]) {
+        const rawPlace = originMatch[1].trim().toLowerCase();
+        const isAmbiguous = AMBIGUOUS_ORIGIN_WORDS.some((word) => rawPlace.includes(word));
+        if (!isAmbiguous) {
+          if (CITY_AIRPORT_MAP[rawPlace]) {
+            intent.origin = CITY_AIRPORT_MAP[rawPlace];
+          } else if (rawPlace.length >= 3) {
+            intent.origin = rawPlace.toUpperCase();
           }
         }
       }
     }
 
     // 3. Travelers Extraction
-    if (text.includes('two people') || text.includes('2 people') || text.includes('for two') || text.includes('couple') || text.includes('for 2')) {
+    if (text.includes('solo') || text.includes('by myself') || text.includes('just me') || text.includes('alone') || text.includes('1 person')) {
+      intent.travelers = 1;
+    } else if (text.includes('my wife and i') || text.includes('me and my partner') || text.includes('me and my friend') || text.includes('two of us') || text.includes('two people') || text.includes('2 people') || text.includes('for two') || text.includes('couple') || text.includes('for 2')) {
       intent.travelers = 2;
-    } else if (text.includes('three people') || text.includes('3 people') || text.includes('for 3')) {
+    } else if (text.includes('three people') || text.includes('3 people') || text.includes('for 3') || text.includes('three of us')) {
       intent.travelers = 3;
-    } else if (text.includes('four people') || text.includes('4 people') || text.includes('for 4') || text.includes('family')) {
+    } else if (text.includes('four people') || text.includes('4 people') || text.includes('for 4') || text.includes('four of us')) {
       intent.travelers = 4;
     } else {
-      const paxMatch = text.match(/(\d+)\s*(?:travelers?|people|passengers?|adults?)/);
-      if (paxMatch) {
-        intent.travelers = parseInt(paxMatch[1], 10);
+      const familyMatch = text.match(/family\s+of\s+(\d+)/i);
+      if (familyMatch) {
+        intent.travelers = parseInt(familyMatch[1], 10);
+      } else {
+        const friendsMatch = text.match(/me\s+and\s+(\d+)\s+friends?/i);
+        if (friendsMatch) {
+          intent.travelers = 1 + parseInt(friendsMatch[1], 10);
+        } else {
+          const paxMatch = text.match(/(\d+)\s*(?:travelers?|people|passengers?|adults?|guests?)/i);
+          if (paxMatch) {
+            intent.travelers = parseInt(paxMatch[1], 10);
+          }
+        }
       }
     }
 
     // 4. Duration & Days Extraction
-    const daysMatch = text.match(/(\d+)[ -]days?/);
+    const daysMatch = text.match(/(\d+)[ -]days?/i);
     if (daysMatch) {
       intent.totalDays = parseInt(daysMatch[1], 10);
-    } else if (text.includes('weekend')) {
-      intent.totalDays = 3;
-    } else if (text.includes('one week') || text.includes('a week')) {
-      intent.totalDays = 7;
+    } else {
+      const weeksMatch = text.match(/(\d+)[ -]weeks?/i);
+      if (weeksMatch) {
+        intent.totalDays = parseInt(weeksMatch[1], 10) * 7;
+      } else if (text.includes('weekend')) {
+        intent.totalDays = 3;
+      } else if (text.includes('one week') || text.includes('a week')) {
+        intent.totalDays = 7;
+      }
     }
 
-    // 5. Budget Extraction (Precise targeting of budget keywords & currency symbols)
-    const budgetPatterns = [
-      /(?:budget|cost|spending|total)\s*(?:is|of)?\s*(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand|lakh)?/i,
-      /(?:₹|rs\.?|inr)\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand|lakh)?/i,
-      /(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand|lakh)?\s*(?:₹|rs\.?|inr|budget)/i
-    ];
-
-    for (const pattern of budgetPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        const valStr = match[1].replace(/,/g, '');
-        let amount = parseFloat(valStr);
-        const multiplier = (match[2] || '').toLowerCase();
-        if (multiplier === 'k' || multiplier === 'thousand') {
-          amount *= 1000;
-        } else if (multiplier === 'lakh') {
-          amount *= 100000;
-        }
-        if (amount >= 500) {
-          intent.totalBudget = amount;
+    // 5. Explicit Dates / Month Extraction
+    const isoDateMatch = text.match(/(\d{4}-\d{2}-\d{2})/);
+    if (isoDateMatch) {
+      intent.startDate = isoDateMatch[1];
+      if (intent.totalDays) {
+        const endObj = new Date(intent.startDate);
+        endObj.setDate(endObj.getDate() + intent.totalDays);
+        intent.endDate = endObj.toISOString().split('T')[0];
+      }
+    } else {
+      for (const [mName, mIdx] of Object.entries(MONTH_NAMES)) {
+        if (text.includes(`in ${mName}`) || text.includes(`during ${mName}`) || text.includes(`for ${mName}`)) {
+          const now = new Date();
+          let targetYear = now.getFullYear();
+          if (mIdx < now.getMonth()) {
+            targetYear += 1;
+          }
+          const startObj = new Date(targetYear, mIdx, 15);
+          intent.startDate = startObj.toISOString().split('T')[0];
+          if (intent.totalDays) {
+            const endObj = new Date(startObj);
+            endObj.setDate(endObj.getDate() + intent.totalDays);
+            intent.endDate = endObj.toISOString().split('T')[0];
+          }
           break;
         }
       }
     }
 
-    // 6. Dates Computation (if totalDays is known but dates are not explicitly supplied)
     if (intent.totalDays && !intent.startDate) {
       const start = new Date();
       start.setDate(start.getDate() + 21);
@@ -126,13 +217,42 @@ export class IntentParser {
       intent.endDate = end.toISOString().split('T')[0];
     }
 
+    // 6. Budget Extraction
+    const budgetPatterns = [
+      /(?:₹|rs\.?|inr|budget\s*(?:is|of)?\s*)?\s*(\d+(?:\.\d+)?)\s*(?:lakhs?|l\b)/i,
+      /(?:budget|cost|spending|total)\s*(?:is|of)?\s*(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?/i,
+      /(?:₹|rs\.?|inr)\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?/i,
+      /(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?\s*(?:₹|rs\.?|inr|rupees|budget)/i
+    ];
+
+    for (const pattern of budgetPatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        let amount = 0;
+        if (pattern.source.includes('lakh')) {
+          amount = parseFloat(match[1]) * 100000;
+        } else {
+          const valStr = match[1].replace(/,/g, '');
+          amount = parseFloat(valStr);
+          const multiplier = (match[2] || '').toLowerCase();
+          if (multiplier === 'k' || multiplier === 'thousand') {
+            amount *= 1000;
+          }
+        }
+        if (amount >= 500) {
+          intent.totalBudget = amount;
+          break;
+        }
+      }
+    }
+
     // 7. Vibes & Preferences
     const vibesFound: string[] = [];
     if (text.includes('beach') || text.includes('beaches')) vibesFound.push('Beaches');
     if (text.includes('adventure') || text.includes('water sports')) vibesFound.push('Adventure');
-    if (text.includes('heritage') || text.includes('history') || text.includes('culture')) vibesFound.push('Heritage');
+    if (text.includes('heritage') || text.includes('history') || text.includes('culture') || text.includes('temple')) vibesFound.push('Heritage');
     if (text.includes('food') || text.includes('seafood') || text.includes('cuisine') || text.includes('dining')) vibesFound.push('Local Food');
-    if (text.includes('relaxation') || text.includes('chill') || text.includes('spa')) vibesFound.push('Relaxation');
+    if (text.includes('relaxation') || text.includes('chill') || text.includes('spa') || text.includes('peaceful')) vibesFound.push('Relaxation');
     intent.vibe = Array.from(new Set([...intent.vibe, ...vibesFound]));
 
     // 8. Missing Information Analysis
@@ -140,7 +260,8 @@ export class IntentParser {
     if (!intent.destination) {
       missingFields.push('destination');
     }
-    if (!intent.origin) {
+    const isOriginMissing = !intent.origin || AMBIGUOUS_ORIGIN_WORDS.some((w) => intent.origin?.toLowerCase().includes(w));
+    if (isOriginMissing) {
       missingFields.push('origin');
     }
     if (!intent.totalDays && !intent.startDate) {

@@ -19,6 +19,10 @@ export class ChatController {
       return;
     }
 
+    let agentRunId: string | null = null;
+    let runFinalStatus: string = 'FAILED';
+    let sseHandler: SSEStreamHandler | null = null;
+
     try {
       // 1. Resolve or Create Conversation
       let activeConversationId = conversationId;
@@ -46,7 +50,7 @@ export class ChatController {
         activeConversationId = newConv.id;
       }
 
-      // 2. Prevent duplicate execution if a run is currently active
+      // 2. Prevent duplicate concurrent execution if a run is currently active
       const runningCount = await prisma.agentRun.count({
         where: {
           conversationId: activeConversationId,
@@ -74,9 +78,10 @@ export class ChatController {
           status: 'RUNNING'
         }
       });
+      agentRunId = agentRun.id;
 
-      // 4. Initialize SSE Stream
-      const sseHandler = new SSEStreamHandler(req, res);
+      // 4. Initialize SSE Stream with comprehensive disconnect detection
+      sseHandler = new SSEStreamHandler(req, res);
 
       // Save user prompt message to DB
       await prisma.message.create({
@@ -87,7 +92,7 @@ export class ChatController {
         }
       });
 
-      // 5. Execute LangGraph Agent with Checkpointer
+      // 5. Execute LangGraph Agent with Checkpointer & Progressive SSE
       const finalState = await travelAgentOrchestrator.executeWorkflow(
         {
           userId,
@@ -97,6 +102,13 @@ export class ChatController {
         },
         sseHandler
       );
+
+      runFinalStatus = finalState.status;
+
+      // If client disconnected during execution, update status to CANCELLED
+      if (!sseHandler.isConnected) {
+        runFinalStatus = 'CANCELLED';
+      }
 
       // 6. Persist Results & Assistant Message in DB
       const assistantMessage = finalState.summary || finalState.clarificationQuestion || 'I have analyzed your request.';
@@ -182,21 +194,35 @@ export class ChatController {
           data: { tripId: trip.id }
         });
       }
-
-      // Mark AgentRun completed
-      await prisma.agentRun.update({
-        where: { id: agentRun.id },
-        data: {
-          status: finalState.status,
-          completedAt: new Date()
-        }
-      });
-
-      // Close SSE connection
-      sseHandler.close();
     } catch (error: any) {
       logger.error('Error in handleStreamMessage', 'ChatController', error);
+      runFinalStatus = 'FAILED';
+      if (sseHandler && sseHandler.isConnected) {
+        sseHandler.emit('error', {
+          code: error.code || 'AGENT_EXECUTION_ERROR',
+          message: error.message || 'An error occurred during workflow execution'
+        });
+      }
       next(error);
+    } finally {
+      // Guaranteed Cleanup: Always transition AgentRun out of RUNNING
+      if (agentRunId) {
+        try {
+          await prisma.agentRun.update({
+            where: { id: agentRunId },
+            data: {
+              status: runFinalStatus,
+              completedAt: new Date()
+            }
+          });
+        } catch (updateErr: any) {
+          logger.error('Failed to update agent run status in finally block', 'ChatController', updateErr);
+        }
+      }
+
+      if (sseHandler) {
+        sseHandler.close();
+      }
     }
   }
 

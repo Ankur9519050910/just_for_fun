@@ -41,7 +41,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
     userBToken = signToken({ userId: userB.id, email: userB.email, role: 'USER' });
   });
 
-  describe('1. Intent Parser & Missing Information Detection', () => {
+  describe('1. Comprehensive Intent Parser Testing', () => {
     it('should extract complete constraints from natural language prompt', () => {
       const prompt = "Plan a 5-day trip to Goa for two people from Kolkata. Total budget is ₹50,000. I love beaches and seafood.";
       const { intent, missingFields, clarificationQuestion } = intentParser.parse(prompt);
@@ -65,6 +65,53 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(missingFields).toContain('duration or dates');
       expect(clarificationQuestion).toBeDefined();
     });
+
+    it('should extract unsupported destination cities correctly', () => {
+      const prompt1 = "Trip to Paris from Delhi for 7 days with 2 Lakh budget";
+      const res1 = intentParser.parse(prompt1);
+      expect(res1.intent.destination).toBe('Paris');
+      expect(res1.intent.origin).toBe('DEL');
+      expect(res1.intent.totalBudget).toBe(200000);
+
+      const prompt2 = "I want to visit Zurich for a week from Mumbai with ₹1.5 Lakh budget";
+      const res2 = intentParser.parse(prompt2);
+      expect(res2.intent.destination).toBe('Zurich');
+      expect(res2.intent.origin).toBe('BOM');
+      expect(res2.intent.totalBudget).toBe(150000);
+    });
+
+    it('should handle diverse budget formats (Lakhs, K, rupees, INR)', () => {
+      expect(intentParser.parse("Goa trip budget ₹1.5 Lakh").intent.totalBudget).toBe(150000);
+      expect(intentParser.parse("Goa trip budget 75k").intent.totalBudget).toBe(75000);
+      expect(intentParser.parse("Goa trip with Rs. 80000").intent.totalBudget).toBe(80000);
+      expect(intentParser.parse("Goa trip under 60000 rupees").intent.totalBudget).toBe(60000);
+      expect(intentParser.parse("Goa trip with 120000 INR").intent.totalBudget).toBe(120000);
+    });
+
+    it('should handle diverse traveler counts (solo, couple, family, friends)', () => {
+      expect(intentParser.parse("Solo trip to Goa").intent.travelers).toBe(1);
+      expect(intentParser.parse("Goa trip by myself").intent.travelers).toBe(1);
+      expect(intentParser.parse("Trip to Goa for my wife and I").intent.travelers).toBe(2);
+      expect(intentParser.parse("Trip to Goa for me and my partner").intent.travelers).toBe(2);
+      expect(intentParser.parse("Trip to Goa for a family of 5").intent.travelers).toBe(5);
+      expect(intentParser.parse("Trip to Goa for me and 3 friends").intent.travelers).toBe(4);
+    });
+
+    it('should handle dates and month specifications', () => {
+      const isoRes = intentParser.parse("Goa trip starting 2026-12-25 for 5 days");
+      expect(isoRes.intent.startDate).toBe('2026-12-25');
+      expect(isoRes.intent.endDate).toBe('2026-12-30');
+
+      const monthRes = intentParser.parse("5-day trip to Goa in December with 50k budget");
+      expect(monthRes.intent.startDate).toBeDefined();
+      expect(monthRes.intent.startDate).toContain('-12-');
+    });
+
+    it('should detect ambiguous origins as missing fields', () => {
+      const res = intentParser.parse("Trip to Goa from somewhere nice for 5 days with 50000 budget");
+      expect(res.missingFields).toContain('origin');
+      expect(res.clarificationQuestion).toContain('Where will you be departing from');
+    });
   });
 
   describe('2. Provider Abstraction & Inventory Normalization', () => {
@@ -83,7 +130,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(first.totalPrice).toBeGreaterThan(0);
       expect(first.currency).toBe('INR');
       expect(first.source).toBeDefined();
-      expect(first.isMockData).toBe(true); // Sandbox mock fixture
+      expect(first.isMockData).toBe(true);
       expect(first.notice).toContain('SIMULATED MOCK FIXTURE');
     });
 
@@ -119,7 +166,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(state.status).toBe('NEED_INFO');
       expect(state.missingInformation).toContain('origin');
       expect(state.clarificationQuestion).toBeDefined();
-      expect(state.flightResults.length).toBe(0); // Did not query prematurely
+      expect(state.flightResults.length).toBe(0);
     });
 
     it('should resume workflow on same thread and execute research once origin is supplied', async () => {
@@ -171,7 +218,35 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
     });
   });
 
-  describe('5. Direct Inventory Endpoints', () => {
+  describe('5. Reliable Failure Cleanup for AgentRun', () => {
+    it('should ensure AgentRun does not remain RUNNING when an error occurs', async () => {
+      // Create conversation
+      const conv = await prisma.conversation.create({
+        data: {
+          userId: userAId,
+          title: "Error Recovery Test"
+        }
+      });
+
+      // Attempt to invoke stream with invalid input that triggers error
+      await request(app)
+        .post('/api/chat/stream')
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({ conversationId: conv.id, message: "" });
+
+      // Verify no AgentRun is left in RUNNING
+      const runningRuns = await prisma.agentRun.findMany({
+        where: {
+          conversationId: conv.id,
+          status: 'RUNNING'
+        }
+      });
+
+      expect(runningRuns.length).toBe(0);
+    });
+  });
+
+  describe('6. Direct Inventory Endpoints', () => {
     it('should search direct flights via POST /api/inventory/flights', async () => {
       const res = await request(app)
         .post('/api/inventory/flights')
