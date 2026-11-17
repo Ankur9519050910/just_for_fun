@@ -43,7 +43,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
 
   describe('1. Comprehensive Intent Parser Testing', () => {
     it('should extract complete constraints from natural language prompt', () => {
-      const prompt = "Plan a 5-day trip to Goa for two people from Kolkata. Total budget is ₹50,000. I love beaches and seafood.";
+      const prompt = "Plan a 5-day trip to Goa for two people from Kolkata starting 2026-12-10. Total budget is ₹50,000. I love beaches and seafood.";
       const { intent, missingFields, clarificationQuestion } = intentParser.parse(prompt);
 
       expect(intent.destination).toBe('Goa');
@@ -67,13 +67,13 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
     });
 
     it('should extract unsupported destination cities correctly', () => {
-      const prompt1 = "Trip to Paris from Delhi for 7 days with 2 Lakh budget";
+      const prompt1 = "Trip to Paris from Delhi starting 2026-12-10 for 7 days with 2 Lakh budget";
       const res1 = intentParser.parse(prompt1);
       expect(res1.intent.destination).toBe('Paris');
       expect(res1.intent.origin).toBe('DEL');
       expect(res1.intent.totalBudget).toBe(200000);
 
-      const prompt2 = "I want to visit Zurich for a week from Mumbai with ₹1.5 Lakh budget";
+      const prompt2 = "I want to visit Zurich starting 2026-12-15 for a week from Mumbai with ₹1.5 Lakh budget";
       const res2 = intentParser.parse(prompt2);
       expect(res2.intent.destination).toBe('Zurich');
       expect(res2.intent.origin).toBe('BOM');
@@ -97,17 +97,15 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(intentParser.parse("Trip to Goa for me and 3 friends").intent.travelers).toBe(4);
     });
 
-    it('should handle dates and month specifications', () => {
-      const isoRes = intentParser.parse("Goa trip starting 2026-12-25 for 5 days");
-      expect(isoRes.intent.startDate).toBe('2026-12-25');
-      expect(isoRes.intent.endDate).toBe('2026-12-30');
-
-      const monthRes = intentParser.parse("5-day trip to Goa in December with 50k budget");
-      expect(monthRes.intent.startDate).toBeDefined();
-      expect(monthRes.intent.startDate).toContain('-12-');
+    it('should preserve month-only mentions without silently fabricating hard date numbers', () => {
+      const monthRes = intentParser.parse("5-day trip to Goa from Kolkata in December with 50k budget");
+      expect(monthRes.intent.tentativeMonth).toBe('December');
+      expect(monthRes.intent.isApproximateDates).toBe(true);
+      expect(monthRes.missingFields).toContain('exact dates in December');
+      expect(monthRes.clarificationQuestion).toContain('December');
     });
 
-    it('should detect ambiguous origins as missing fields', () => {
+    it('should detect ambiguous origins as missing fields and refuse arbitrary origin strings', () => {
       const res = intentParser.parse("Trip to Goa from somewhere nice for 5 days with 50000 budget");
       expect(res.missingFields).toContain('origin');
       expect(res.clarificationQuestion).toContain('Where will you be departing from');
@@ -160,7 +158,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         userId: userAId,
         conversationId: threadId,
         threadId,
-        userPrompt: "I want to take a 5-day trip to Goa with ₹50,000 budget"
+        userPrompt: "I want to take a 5-day trip to Goa starting 2026-12-10 with ₹50,000 budget"
       });
 
       expect(state.status).toBe('NEED_INFO');
@@ -220,7 +218,6 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
 
   describe('5. Reliable Failure Cleanup for AgentRun', () => {
     it('should ensure AgentRun does not remain RUNNING when an error occurs', async () => {
-      // Create conversation
       const conv = await prisma.conversation.create({
         data: {
           userId: userAId,
@@ -228,13 +225,11 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         }
       });
 
-      // Attempt to invoke stream with invalid input that triggers error
       await request(app)
         .post('/api/chat/stream')
         .set('Authorization', `Bearer ${userAToken}`)
         .send({ conversationId: conv.id, message: "" });
 
-      // Verify no AgentRun is left in RUNNING
       const runningRuns = await prisma.agentRun.findMany({
         where: {
           conversationId: conv.id,

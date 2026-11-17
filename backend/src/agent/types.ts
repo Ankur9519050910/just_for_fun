@@ -102,9 +102,11 @@ export type ToolExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' |
 
 export interface TravelIntent {
   destination?: string;
-  origin?: string;
-  startDate?: string; // YYYY-MM-DD
-  endDate?: string; // YYYY-MM-DD
+  origin?: string; // Must be validated 3-letter IATA code, e.g. "CCU"
+  startDate?: string; // YYYY-MM-DD (confirmed date)
+  endDate?: string; // YYYY-MM-DD (confirmed date)
+  tentativeMonth?: string; // e.g. "December" when exact date is not yet chosen
+  isApproximateDates?: boolean;
   totalDays?: number;
   travelers?: number;
   totalBudget?: number;

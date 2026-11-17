@@ -130,7 +130,7 @@ export class TravelAgentOrchestrator {
         };
       })
       .addNode('research_inventory', async (state: TravelWorkflowState) => {
-        logger.info('Node: research_inventory - Initiating inventory discovery', 'TravelWorkflow');
+        logger.info('Node: research_inventory - Initiating isolated inventory discovery', 'TravelWorkflow');
         const intent = state.extractedIntent;
         const origin = intent.origin || 'CCU';
         const destination = intent.destination || 'Goa';
@@ -139,10 +139,10 @@ export class TravelAgentOrchestrator {
         const travelers = intent.travelers || 2;
 
         const toolStatuses: Record<string, ToolExecutionStatus> = {
-          search_flights: 'RUNNING',
-          search_hotels: 'RUNNING',
-          search_attractions: 'RUNNING',
-          get_weather: 'RUNNING'
+          search_flights: 'PENDING',
+          search_hotels: 'PENDING',
+          search_attractions: 'PENDING',
+          get_weather: 'PENDING'
         };
 
         const providerErrors: ProviderErrorRecord[] = [];
@@ -150,8 +150,9 @@ export class TravelAgentOrchestrator {
         // 1. Resolve Destination Coordinates
         const coords = await destinationProvider.getCoordinates(destination);
 
-        // 2. Query Flights & Hotels concurrently
-        const [flightRes, hotelRes, attractions, weather] = await Promise.all([
+        // 2. Query Providers with Complete Failure Isolation (Promise.allSettled)
+        // One failing provider must NEVER discard or abort successful results from others!
+        const [flightSettled, hotelSettled, attractionSettled, weatherSettled] = await Promise.allSettled([
           flightService.searchFlights({
             originAirport: origin,
             destAirport: coords.iataCode || 'GOI',
@@ -175,19 +176,73 @@ export class TravelAgentOrchestrator {
           weatherProvider.getForecast(coords.latitude, coords.longitude, departureDate, intent.totalDays || 5)
         ]);
 
-        if (flightRes.errorRecord) providerErrors.push(flightRes.errorRecord);
-        if (hotelRes.errorRecord) providerErrors.push(hotelRes.errorRecord);
+        // Process Flights with Isolation
+        let flightResults: NormalizedFlightOffer[] = [];
+        if (flightSettled.status === 'fulfilled') {
+          flightResults = flightSettled.value.results;
+          if (flightSettled.value.errorRecord) {
+            providerErrors.push(flightSettled.value.errorRecord);
+          }
+          toolStatuses.search_flights = 'SUCCESS';
+        } else {
+          logger.error('Flight provider failed completely', 'TravelWorkflow', flightSettled.reason);
+          toolStatuses.search_flights = 'FAILED';
+          providerErrors.push({
+            provider: 'FLIGHT_SERVICE',
+            endpoint: '/inventory/flights',
+            errorCode: 'PROVIDER_FATAL',
+            message: flightSettled.reason?.message || 'Flight research service failed',
+            timestamp: new Date().toISOString(),
+            fallbackTriggered: false
+          });
+        }
 
-        toolStatuses.search_flights = 'SUCCESS';
-        toolStatuses.search_hotels = 'SUCCESS';
-        toolStatuses.search_attractions = 'SUCCESS';
-        toolStatuses.get_weather = 'SUCCESS';
+        // Process Hotels with Isolation
+        let hotelResults: NormalizedHotelOffer[] = [];
+        if (hotelSettled.status === 'fulfilled') {
+          hotelResults = hotelSettled.value.results;
+          if (hotelSettled.value.errorRecord) {
+            providerErrors.push(hotelSettled.value.errorRecord);
+          }
+          toolStatuses.search_hotels = 'SUCCESS';
+        } else {
+          logger.error('Hotel provider failed completely', 'TravelWorkflow', hotelSettled.reason);
+          toolStatuses.search_hotels = 'FAILED';
+          providerErrors.push({
+            provider: 'HOTEL_SERVICE',
+            endpoint: '/inventory/hotels',
+            errorCode: 'PROVIDER_FATAL',
+            message: hotelSettled.reason?.message || 'Hotel research service failed',
+            timestamp: new Date().toISOString(),
+            fallbackTriggered: false
+          });
+        }
+
+        // Process Attractions with Isolation
+        let attractionResults: DestinationAttraction[] = [];
+        if (attractionSettled.status === 'fulfilled') {
+          attractionResults = attractionSettled.value;
+          toolStatuses.search_attractions = 'SUCCESS';
+        } else {
+          logger.error('Attraction provider failed', 'TravelWorkflow', attractionSettled.reason);
+          toolStatuses.search_attractions = 'FAILED';
+        }
+
+        // Process Weather with Isolation
+        let weatherForecast: WeatherForecastDay[] = [];
+        if (weatherSettled.status === 'fulfilled') {
+          weatherForecast = weatherSettled.value;
+          toolStatuses.get_weather = 'SUCCESS';
+        } else {
+          logger.error('Weather provider failed', 'TravelWorkflow', weatherSettled.reason);
+          toolStatuses.get_weather = 'FAILED';
+        }
 
         return {
-          flightResults: flightRes.results,
-          hotelResults: hotelRes.results,
-          attractionResults: attractions,
-          weatherForecast: weather,
+          flightResults,
+          hotelResults,
+          attractionResults,
+          weatherForecast,
           toolStatuses,
           providerErrors,
           status: 'RESEARCHING',
@@ -196,53 +251,59 @@ export class TravelAgentOrchestrator {
         };
       })
       .addNode('synthesize_plan', async (state: TravelWorkflowState) => {
-        logger.info('Node: synthesize_plan - Generating structured summary and itinerary narrative', 'TravelWorkflow');
+        logger.info('Node: synthesize_plan - Generating transparent budget breakdown and itinerary narrative', 'TravelWorkflow');
         const intent = state.extractedIntent;
         const destination = intent.destination || 'Selected Destination';
         const days = intent.totalDays || 5;
         const travelers = intent.travelers || 2;
-        const budget = intent.totalBudget || 50000;
+        const targetBudget = intent.totalBudget || 50000;
 
         const bestFlight = state.flightResults && state.flightResults.length > 0 ? state.flightResults[0] : null;
         const bestHotel = state.hotelResults && state.hotelResults.length > 0 ? state.hotelResults[0] : null;
 
-        // Compute spend exclusively from actual found inventory - NEVER hardcode placeholder prices
-        const flightCost = bestFlight ? bestFlight.totalPrice : 0;
-        const hotelCost = bestHotel ? bestHotel.totalPrice : 0;
-        const estimatedActivities = state.attractionResults.reduce((acc, curr) => acc + (curr.estimatedCost || 0), 0);
-        const bufferEst = 5000;
-        const actualCommittedCost = flightCost + hotelCost;
-        const projectedTotal = actualCommittedCost + (estimatedActivities > 0 ? estimatedActivities : 3000) + bufferEst;
+        // Explicit Budget Transparency: Delineate quoted inventory vs estimated activities vs contingency
+        const quotedFlightCost = bestFlight ? bestFlight.totalPrice : 0;
+        const quotedHotelCost = bestHotel ? bestHotel.totalPrice : 0;
+        const totalQuotedInventory = quotedFlightCost + quotedHotelCost;
+
+        const estimatedActivitiesCost = state.attractionResults.reduce((acc, curr) => acc + (curr.estimatedCost || 0), 0);
+        const estimatedContingencyBuffer = 5000; // transportation, tips, incidental buffer
+        const totalProjectedSpend = totalQuotedInventory + (estimatedActivitiesCost > 0 ? estimatedActivitiesCost : 3000) + estimatedContingencyBuffer;
 
         const isMockFlights = state.flightResults.some((f) => f.isMockData);
         const isMockHotels = state.hotelResults.some((h) => h.isMockData);
 
-        const flightSummary = bestFlight
-          ? `• Flights: Discovered ${state.flightResults.length} options. Recommended: ${bestFlight.airlineName} (${bestFlight.flightNumber}) at ₹${bestFlight.totalPrice.toLocaleString('en-IN')} (${bestFlight.source}).`
-          : `• Flights: No flights found matching the exact criteria. (Flight cost allocation: ₹0).`;
+        const flightNarrative = bestFlight
+          ? `• Flights [Quoted]: ${bestFlight.airlineName} (${bestFlight.flightNumber}) at ₹${bestFlight.totalPrice.toLocaleString('en-IN')} (${bestFlight.source}).`
+          : `• Flights: No flights discovered. Quoted cost: ₹0 (requires custom departure search).`;
 
-        const hotelSummary = bestHotel
-          ? `• Hotels: Discovered ${state.hotelResults.length} properties (≥${intent.hotelMinRating}★). Recommended: ${bestHotel.hotelName} at ₹${bestHotel.totalPrice.toLocaleString('en-IN')} for stay (${bestHotel.source}).`
-          : `• Hotels: No hotel inventory available for specified dates. (Hotel cost allocation: ₹0).`;
+        const hotelNarrative = bestHotel
+          ? `• Accommodation [Quoted]: ${bestHotel.hotelName} (≥${intent.hotelMinRating}★) at ₹${bestHotel.totalPrice.toLocaleString('en-IN')} for stay (${bestHotel.source}).`
+          : `• Accommodation: No hotel offers found. Quoted cost: ₹0 (requires date refinement).`;
 
         const weatherDesc = state.weatherForecast.length > 0
           ? `• Weather: Expect ${state.weatherForecast[0].condition} with daytime highs around ${state.weatherForecast[0].maxTempC}°C.`
-          : `• Weather: Forecast data pending for dates.`;
+          : `• Weather: Weather forecast pending for destination.`;
 
         const attractionsDesc = state.attractionResults.length > 0
-          ? `• Experiences: Curated ${state.attractionResults.length} activities matching interests (${intent.vibe.length > 0 ? intent.vibe.join(', ') : 'sightseeing and culture'}).`
+          ? `• Experiences [Curated]: ${state.attractionResults.length} activities matching interests (${intent.vibe.length > 0 ? intent.vibe.join(', ') : 'sightseeing'}).`
           : `• Experiences: Exploring local sights.`;
 
-        const budgetDesc = `• Budget Projection: Estimated total ₹${projectedTotal.toLocaleString('en-IN')} against target ₹${budget.toLocaleString('en-IN')} (${Math.round((projectedTotal / budget) * 100)}% allocation).`;
+        const budgetTransparencyTable = 
+`• Budget Breakdown (Transparent Accounting):
+  - Actual Quoted Inventory: ₹${totalQuotedInventory.toLocaleString('en-IN')} (Flights: ₹${quotedFlightCost.toLocaleString('en-IN')}, Hotels: ₹${quotedHotelCost.toLocaleString('en-IN')})
+  - Estimated Unbooked Activities: ~₹${(estimatedActivitiesCost > 0 ? estimatedActivitiesCost : 3000).toLocaleString('en-IN')} (Estimated local entry & guide expenses)
+  - Recommended Contingency Buffer: ₹${estimatedContingencyBuffer.toLocaleString('en-IN')} (Local transfers, meals & buffer)
+  - Total Projected Trip Cost: ₹${totalProjectedSpend.toLocaleString('en-IN')} against target budget ₹${targetBudget.toLocaleString('en-IN')} (${Math.round((totalProjectedSpend / targetBudget) * 100)}% allocation).`;
 
         let provenanceNotice = '';
         if (isMockFlights || isMockHotels) {
-          provenanceNotice = '\n\n⚠️ Inventory Notice: One or more inventory options are using deterministic simulation fixtures (SIMULATED_MOCK_FIXTURE) because live Amadeus test keys were unconfigured or sandbox criteria required simulated routes.';
+          provenanceNotice = '\n\n⚠️ Provenance Notice: One or more inventory quotes are derived from deterministic simulation fixtures (SIMULATED_MOCK_FIXTURE) because Amadeus test credentials were unconfigured or live route was unavailable.';
         } else if (state.flightResults.length > 0 || state.hotelResults.length > 0) {
-          provenanceNotice = '\n\n✅ Verified inventory loaded from live provider APIs.';
+          provenanceNotice = '\n\n✅ Provenance Verified: Inventory quotes retrieved from live provider APIs.';
         }
 
-        const summary = `I have completed the travel research for your ${days}-day trip to ${destination} for ${travelers} traveler(s).\n${flightSummary}\n${hotelSummary}\n${weatherDesc}\n${attractionsDesc}\n${budgetDesc}${provenanceNotice}`;
+        const summary = `I have completed the travel research for your ${days}-day trip to ${destination} for ${travelers} traveler(s).\n${flightNarrative}\n${hotelNarrative}\n${weatherDesc}\n${attractionsDesc}\n\n${budgetTransparencyTable}${provenanceNotice}`;
 
         return {
           summary,
@@ -316,8 +377,7 @@ export class TravelAgentOrchestrator {
 
     let latestState: TravelWorkflowState = initialState as TravelWorkflowState;
 
-    // Genuine Progressive SSE Streaming:
-    // We stream node updates in real-time as each node finishes execution!
+    // Genuine Progressive SSE Streaming via LangGraph streamMode: 'updates'
     try {
       const streamIterable = await graph.stream(initialState, {
         ...config,
@@ -325,7 +385,6 @@ export class TravelAgentOrchestrator {
       });
 
       for await (const chunk of streamIterable) {
-        // chunk is an object with { [nodeName]: nodeOutput }
         const nodeName = Object.keys(chunk)[0];
         const nodeOutput = chunk[nodeName];
 
@@ -336,7 +395,7 @@ export class TravelAgentOrchestrator {
             sseHandler?.emit('workflow_step', {
               step: 'ask_clarification',
               status: 'RUNNING',
-              description: 'Identifying missing details and formulating follow-up clarification...'
+              description: 'Formulating clarification query for missing travel parameters...'
             });
           } else {
             sseHandler?.emit('intent_extracted', {
@@ -345,7 +404,7 @@ export class TravelAgentOrchestrator {
             sseHandler?.emit('workflow_step', {
               step: 'research_inventory',
               status: 'RUNNING',
-              description: 'Searching flights, hotels, weather, and curated attractions...'
+              description: 'Concurrently researching flights, hotels, weather, and curated attractions...'
             });
             sseHandler?.emit('tool_start', {
               tools: ['search_flights', 'search_hotels', 'get_weather', 'search_attractions']
@@ -384,7 +443,7 @@ export class TravelAgentOrchestrator {
           sseHandler?.emit('workflow_step', {
             step: 'synthesize_plan',
             status: 'RUNNING',
-            description: 'Synthesizing travel plan and calculating budget allocations...'
+            description: 'Synthesizing travel plan and calculating transparent budget allocation...'
           });
         } else if (nodeName === 'synthesize_plan') {
           sseHandler?.emit('plan_ready', {
@@ -393,7 +452,6 @@ export class TravelAgentOrchestrator {
           });
         }
 
-        // Keep local state up to date
         latestState = { ...latestState, ...nodeOutput };
       }
     } catch (streamError: any) {
@@ -401,7 +459,6 @@ export class TravelAgentOrchestrator {
       throw streamError;
     }
 
-    // Retrieve final snapshot from checkpointer
     const finalSnapshot = await graph.getState(config);
     const finalState = (finalSnapshot?.values || latestState) as TravelWorkflowState;
 

@@ -1,7 +1,9 @@
 import { TravelIntent } from './types';
 import { UserPreferencesDto } from '../types/auth';
 
-const CITY_AIRPORT_MAP: Record<string, string> = {
+// Validated IATA Airport Registry for major domestic and international hubs
+const AIRPORT_REGISTRY: Record<string, string> = {
+  // Major Indian Cities
   kolkata: 'CCU',
   calcutta: 'CCU',
   goa: 'GOI',
@@ -12,16 +14,45 @@ const CITY_AIRPORT_MAP: Record<string, string> = {
   bangalore: 'BLR',
   bengaluru: 'BLR',
   chennai: 'MAA',
+  madras: 'MAA',
   hyderabad: 'HYD',
   jaipur: 'JAI',
-  coimbatore: 'CJB',
   ahmedabad: 'AMD',
   pune: 'PNQ',
   kochi: 'COK',
-  paris: 'CDG',
+  cochin: 'COK',
+  coimbatore: 'CJB',
+  chandigarh: 'IXC',
+  lucknow: 'LKO',
+  guwahati: 'GAU',
+  bhubaneswar: 'BBI',
+  varanasi: 'VNS',
+  srinagar: 'SXR',
+  patna: 'PAT',
+  indore: 'IDR',
+  amritsar: 'ATQ',
+  mangalore: 'IXE',
+  thiruvananthapuram: 'TRV',
+  trivandrum: 'TRV',
+  visakhapatnam: 'VTZ',
+  surat: 'STV',
+  nagpur: 'NAG',
+  bagdogra: 'IXB',
+  bhopal: 'BHO',
+  dehradun: 'DED',
+
+  // Major International Hubs
   london: 'LHR',
-  zurich: 'ZRH'
+  paris: 'CDG',
+  dubai: 'DXB',
+  singapore: 'SIN',
+  bangkok: 'BKK',
+  zurich: 'ZRH',
+  tokyo: 'NRT',
+  newyork: 'JFK'
 };
+
+const VALID_IATA_CODES = new Set(Object.values(AIRPORT_REGISTRY));
 
 const MONTH_NAMES: Record<string, number> = {
   january: 0,
@@ -49,15 +80,17 @@ const MONTH_NAMES: Record<string, number> = {
   dec: 11
 };
 
-const AMBIGUOUS_ORIGIN_WORDS = [
+const AMBIGUOUS_WORDS = [
   'somewhere',
   'anywhere',
   'nowhere',
   'home',
   'here',
+  'there',
   'place',
   'undecided',
-  'unknown'
+  'unknown',
+  'nearby'
 ];
 
 export class IntentParser {
@@ -72,6 +105,8 @@ export class IntentParser {
       origin: existingIntent?.origin || userPrefs?.homeAirport || undefined,
       startDate: existingIntent?.startDate,
       endDate: existingIntent?.endDate,
+      tentativeMonth: existingIntent?.tentativeMonth,
+      isApproximateDates: existingIntent?.isApproximateDates ?? false,
       totalDays: existingIntent?.totalDays,
       travelers: existingIntent?.travelers || 1,
       totalBudget: existingIntent?.totalBudget,
@@ -85,7 +120,7 @@ export class IntentParser {
 
     // 1. Destination Extraction
     let destFound = false;
-    for (const city of Object.keys(CITY_AIRPORT_MAP)) {
+    for (const city of Object.keys(AIRPORT_REGISTRY)) {
       if (text.includes(city) && !text.includes(`from ${city}`) && !text.includes(`departing ${city}`) && !text.includes(`leaving ${city}`)) {
         intent.destination = city.charAt(0).toUpperCase() + city.slice(1);
         destFound = true;
@@ -98,14 +133,14 @@ export class IntentParser {
       const match = prompt.match(destRegex);
       if (match && match[1]) {
         const candidate = match[1].trim();
-        if (!['a', 'the', 'my', 'two', 'three', 'four', 'us', 'me'].includes(candidate.toLowerCase())) {
+        if (!['a', 'the', 'my', 'two', 'three', 'four', 'us', 'me', 'our'].includes(candidate.toLowerCase())) {
           intent.destination = candidate.charAt(0).toUpperCase() + candidate.slice(1);
         }
       }
     }
 
-    // 2. Origin Extraction
-    for (const [city, iata] of Object.entries(CITY_AIRPORT_MAP)) {
+    // 2. Origin Extraction with Strict IATA Validation
+    for (const [city, iata] of Object.entries(AIRPORT_REGISTRY)) {
       if (text.includes(`from ${city}`) || text.includes(`departing ${city}`) || text.includes(`leaving ${city}`)) {
         intent.origin = iata;
         break;
@@ -114,9 +149,9 @@ export class IntentParser {
 
     const iataMatches = prompt.match(/\b([A-Z]{3})\b/g);
     if (iataMatches) {
-      for (const iata of iataMatches) {
-        if (Object.values(CITY_AIRPORT_MAP).includes(iata) && iata !== 'GOI') {
-          intent.origin = iata;
+      for (const candidateIata of iataMatches) {
+        if (VALID_IATA_CODES.has(candidateIata) && candidateIata !== 'GOI') {
+          intent.origin = candidateIata;
           break;
         }
       }
@@ -126,13 +161,8 @@ export class IntentParser {
       const originMatch = prompt.match(/(?:from|departing|leaving)\s+([a-zA-Z\s]{2,20}?)(?=[,\.\?\!]|\s+(?:to|for|with|in|on|at)|$)/i);
       if (originMatch && originMatch[1]) {
         const rawPlace = originMatch[1].trim().toLowerCase();
-        const isAmbiguous = AMBIGUOUS_ORIGIN_WORDS.some((word) => rawPlace.includes(word));
-        if (!isAmbiguous) {
-          if (CITY_AIRPORT_MAP[rawPlace]) {
-            intent.origin = CITY_AIRPORT_MAP[rawPlace];
-          } else if (rawPlace.length >= 3) {
-            intent.origin = rawPlace.toUpperCase();
-          }
+        if (AIRPORT_REGISTRY[rawPlace]) {
+          intent.origin = AIRPORT_REGISTRY[rawPlace];
         }
       }
     }
@@ -178,43 +208,24 @@ export class IntentParser {
       }
     }
 
-    // 5. Explicit Dates / Month Extraction
+    // 5. Date & Month Handling:
     const isoDateMatch = text.match(/(\d{4}-\d{2}-\d{2})/);
     if (isoDateMatch) {
       intent.startDate = isoDateMatch[1];
+      intent.isApproximateDates = false;
       if (intent.totalDays) {
         const endObj = new Date(intent.startDate);
         endObj.setDate(endObj.getDate() + intent.totalDays);
         intent.endDate = endObj.toISOString().split('T')[0];
       }
     } else {
-      for (const [mName, mIdx] of Object.entries(MONTH_NAMES)) {
+      for (const [mName] of Object.entries(MONTH_NAMES)) {
         if (text.includes(`in ${mName}`) || text.includes(`during ${mName}`) || text.includes(`for ${mName}`)) {
-          const now = new Date();
-          let targetYear = now.getFullYear();
-          if (mIdx < now.getMonth()) {
-            targetYear += 1;
-          }
-          const startObj = new Date(targetYear, mIdx, 15);
-          intent.startDate = startObj.toISOString().split('T')[0];
-          if (intent.totalDays) {
-            const endObj = new Date(startObj);
-            endObj.setDate(endObj.getDate() + intent.totalDays);
-            intent.endDate = endObj.toISOString().split('T')[0];
-          }
+          intent.tentativeMonth = mName.charAt(0).toUpperCase() + mName.slice(1);
+          intent.isApproximateDates = true;
           break;
         }
       }
-    }
-
-    if (intent.totalDays && !intent.startDate) {
-      const start = new Date();
-      start.setDate(start.getDate() + 21);
-      const end = new Date(start);
-      end.setDate(end.getDate() + intent.totalDays);
-
-      intent.startDate = start.toISOString().split('T')[0];
-      intent.endDate = end.toISOString().split('T')[0];
     }
 
     // 6. Budget Extraction
@@ -260,28 +271,37 @@ export class IntentParser {
     if (!intent.destination) {
       missingFields.push('destination');
     }
-    const isOriginMissing = !intent.origin || AMBIGUOUS_ORIGIN_WORDS.some((w) => intent.origin?.toLowerCase().includes(w));
+
+    const isOriginMissing = !intent.origin || !VALID_IATA_CODES.has(intent.origin) || AMBIGUOUS_WORDS.some((w) => intent.origin?.toLowerCase().includes(w));
     if (isOriginMissing) {
       missingFields.push('origin');
     }
-    if (!intent.totalDays && !intent.startDate) {
-      missingFields.push('duration or dates');
+
+    if (!intent.startDate) {
+      if (intent.tentativeMonth) {
+        missingFields.push(`exact dates in ${intent.tentativeMonth}`);
+      } else if (!intent.totalDays) {
+        missingFields.push('duration or dates');
+      }
     }
+
     if (!intent.totalBudget) {
       missingFields.push('total budget');
     }
 
-    // 9. Clarification Question Generation
+    // 9. Targeted Clarification Generation
     let clarificationQuestion: string | undefined;
     if (missingFields.length > 0) {
       if (missingFields.includes('destination')) {
         clarificationQuestion = "Which destination would you like to travel to?";
       } else if (missingFields.includes('origin')) {
-        clarificationQuestion = `Where will you be departing from for your trip to ${intent.destination}? (e.g. Kolkata, Delhi, Mumbai)`;
+        clarificationQuestion = `Where will you be departing from for your trip to ${intent.destination || 'your destination'}? (e.g. Kolkata / CCU, Delhi / DEL, Mumbai / BOM)`;
+      } else if (intent.tentativeMonth && !intent.startDate) {
+        clarificationQuestion = `What specific travel dates in ${intent.tentativeMonth} would you prefer?`;
       } else if (missingFields.includes('duration or dates')) {
-        clarificationQuestion = `How many days are you planning to spend in ${intent.destination}, or do you have specific travel dates in mind?`;
+        clarificationQuestion = `How many days do you plan to spend in ${intent.destination}, or do you have specific dates in mind?`;
       } else if (missingFields.includes('total budget')) {
-        clarificationQuestion = `What is your estimated total budget for this trip (including flights and hotels)?`;
+        clarificationQuestion = `What is your estimated total budget for this trip?`;
       } else {
         clarificationQuestion = `Could you please clarify: ${missingFields.join(', ')}?`;
       }
