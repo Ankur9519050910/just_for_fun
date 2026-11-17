@@ -8,6 +8,8 @@ import { authRoutes } from './routes/authRoutes';
 import { preferenceRoutes } from './routes/preferenceRoutes';
 import { tripRoutes } from './routes/tripRoutes';
 import { healthRoutes } from './routes/healthRoutes';
+import { chatRoutes } from './routes/chatRoutes';
+import { inventoryRoutes } from './routes/inventoryRoutes';
 
 export function createApp(): Application {
   const app: Application = express();
@@ -23,7 +25,7 @@ export function createApp(): Application {
       origin: env.CORS_ORIGIN || '*',
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
     })
   );
 
@@ -31,14 +33,19 @@ export function createApp(): Application {
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-  // General rate limiter on all API routes
-  app.use('/api', apiLimiter);
+  // General rate limiter on standard JSON API routes (exclude streaming endpoint to prevent stream throttle)
+  app.use('/api/auth', apiLimiter);
+  app.use('/api/preferences', apiLimiter);
+  app.use('/api/trips', apiLimiter);
+  app.use('/api/inventory', apiLimiter);
 
   // API Routes
   app.use('/api', healthRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/preferences', preferenceRoutes);
   app.use('/api/trips', tripRoutes);
+  app.use('/api/chat', chatRoutes);
+  app.use('/api/inventory', inventoryRoutes);
 
   // 404 Not Found Handler
   app.use((req: Request, res: Response) => {

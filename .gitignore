@@ -8,5 +8,10 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 coverage
-prisma/*.db
-prisma/*.db-journal
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+prisma/*.db*
+backend/prisma/*.db*
+backend/*.db*

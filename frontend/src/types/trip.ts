@@ -40,9 +40,13 @@ export interface FlightOption {
   totalPrice: number;
   currency: string;
   offerReference: string;
+  source?: string;
   isMockData: boolean;
-  isSelected: boolean;
+  notice?: string;
+  isSelected?: boolean;
 }
+
+export type NormalizedFlightOffer = FlightOption;
 
 export interface HotelOption {
   id: string;
@@ -60,9 +64,13 @@ export interface HotelOption {
   roomType: string;
   amenities: string[];
   imageUrl?: string | null;
+  source?: string;
   isMockData: boolean;
-  isSelected: boolean;
+  notice?: string;
+  isSelected?: boolean;
 }
+
+export type NormalizedHotelOffer = HotelOption;
 
 export interface Trip {
   id: string;
