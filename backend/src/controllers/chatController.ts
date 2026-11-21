@@ -117,12 +117,12 @@ export class ChatController {
           conversationId: activeConversationId,
           role: 'ASSISTANT',
           content: assistantMessage,
-          metadata: {
+          metadata: JSON.stringify({
             status: finalState.status,
             intent: finalState.extractedIntent,
             flightCount: finalState.flightResults.length,
             hotelCount: finalState.hotelResults.length
-          } as any
+          }) as any
         }
       });
 

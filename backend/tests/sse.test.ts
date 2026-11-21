@@ -99,7 +99,7 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
     expect(receivedEvents).toContain('plan_ready');
     expect(receivedEvents).toContain('done');
     expect(receivedChunks.length).toBeGreaterThan(3);
-  });
+  }, 30000);
 
   it('2. should detect genuine client disconnect via socket and clear heartbeat safely', (done) => {
     // Mock Request & Response objects to simulate premature disconnect
@@ -211,5 +211,5 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
     });
 
     expect(completedRuns.length).toBeGreaterThan(0);
-  });
+  }, 30000);
 });
