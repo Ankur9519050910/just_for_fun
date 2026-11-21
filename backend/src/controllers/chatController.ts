@@ -82,6 +82,21 @@ export class ChatController {
 
       // 4. Initialize SSE Stream with comprehensive disconnect detection
       sseHandler = new SSEStreamHandler(req, res);
+      sseHandler.onDisconnect(async () => {
+        if (agentRunId) {
+          try {
+            await prisma.agentRun.update({
+              where: { id: agentRunId },
+              data: {
+                status: 'CANCELLED',
+                completedAt: new Date()
+              }
+            });
+          } catch (err: any) {
+            logger.warn('Failed to update agentRun to CANCELLED on disconnect', 'ChatController', err.message);
+          }
+        }
+      });
 
       // Save user prompt message to DB
       await prisma.message.create({
@@ -208,10 +223,13 @@ export class ChatController {
       // Guaranteed Cleanup: Always transition AgentRun out of RUNNING
       if (agentRunId) {
         try {
+          const finalStatus = (sseHandler?.wasPrematurelyDisconnected || !sseHandler?.isConnected)
+            ? 'CANCELLED'
+            : runFinalStatus;
           await prisma.agentRun.update({
             where: { id: agentRunId },
             data: {
-              status: runFinalStatus,
+              status: finalStatus,
               completedAt: new Date()
             }
           });

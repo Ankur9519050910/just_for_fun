@@ -110,6 +110,41 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(res.missingFields).toContain('origin');
       expect(res.clarificationQuestion).toContain('Where will you be departing from');
     });
+
+    it('should detect unknown destination and ask clarification', () => {
+      const prompt = "Plan a 5-day trip from Kolkata starting 2026-12-10 with ₹50,000 budget";
+      const { intent, missingFields, clarificationQuestion } = intentParser.parse(prompt);
+      expect(intent.destination).toBeUndefined();
+      expect(missingFields).toContain('destination');
+      expect(clarificationQuestion).toBe('Which destination would you like to travel to?');
+    });
+
+    it('should detect ambiguous destination and ask clarification without fabricating names', () => {
+      const prompt = "Plan a 5-day trip to somewhere nice from Kolkata starting 2026-12-10 with ₹50,000 budget";
+      const { intent, missingFields, clarificationQuestion } = intentParser.parse(prompt);
+      expect(intent.destination).toBeUndefined();
+      expect(missingFields).toContain('destination');
+      expect(clarificationQuestion).toBe('Which destination would you like to travel to?');
+    });
+
+    it('should correctly modify an existing travel plan in follow-up message', () => {
+      const initialPrompt = "Plan a 5-day trip to Goa from Kolkata starting 2026-12-10 with ₹50,000 budget";
+      const initial = intentParser.parse(initialPrompt);
+
+      // Follow-up modifies budget, duration and switches destination
+      const followUp = intentParser.parse(
+        "Actually change budget to 80,000 and 7 days and switch destination to Jaipur",
+        initial.intent
+      );
+
+      expect(followUp.intent.destination).toBe('Jaipur');
+      expect(followUp.intent.origin).toBe('CCU'); // Preserved
+      expect(followUp.intent.totalBudget).toBe(80000); // Modified
+      expect(followUp.intent.totalDays).toBe(7); // Modified
+      expect(followUp.intent.startDate).toBe('2026-12-10'); // Preserved
+      expect(followUp.intent.endDate).toBe('2026-12-17'); // Recalculated for 7 days
+      expect(followUp.missingFields.length).toBe(0);
+    });
   });
 
   describe('2. Provider Abstraction & Inventory Normalization', () => {
@@ -182,6 +217,29 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(state.flightResults.length).toBeGreaterThan(0);
       expect(state.hotelResults.length).toBeGreaterThan(0);
       expect(state.summary).toContain('Goa');
+    });
+
+    it('should skip flight search when destination has no commercial airport code and return partial result with hotels and attractions', async () => {
+      // Coorg has no commercial airport code in AIRPORT_REGISTRY or DESTINATION_REGISTRY
+      const coorgThreadId = `test_thread_coorg_${Date.now()}`;
+      const state = await travelAgentOrchestrator.executeWorkflow({
+        userId: userAId,
+        conversationId: coorgThreadId,
+        threadId: coorgThreadId,
+        userPrompt: "Plan a 3-day trip to Coorg from Kolkata starting 2026-12-10 with ₹40,000 budget"
+      });
+
+      expect(state.status).toBe('COMPLETED');
+      expect(state.extractedIntent.destination).toBe('Coorg');
+      // Flights must NOT have searched for GOI or returned Goa flights!
+      expect(state.flightResults.length).toBe(0);
+      expect(state.toolStatuses.search_flights).toBe('SKIPPED');
+      // Hotels and attractions should continue and succeed
+      expect(state.hotelResults.length).toBeGreaterThan(0);
+      expect(state.attractionResults.length).toBeGreaterThan(0);
+      // Summary should note flight skipping and include transparent budget
+      expect(state.summary).toContain('Coorg');
+      expect(state.summary).toContain('Direct flight search skipped');
     });
   });
 

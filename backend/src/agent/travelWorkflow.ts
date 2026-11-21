@@ -138,8 +138,12 @@ export class TravelAgentOrchestrator {
         const returnDate = intent.endDate;
         const travelers = intent.travelers || 2;
 
+        // 1. Resolve Destination Coordinates & Airport IATA
+        const coords = await destinationProvider.getCoordinates(destination);
+        const destIata = coords.iataCode;
+
         const toolStatuses: Record<string, ToolExecutionStatus> = {
-          search_flights: 'PENDING',
+          search_flights: destIata ? 'PENDING' : 'SKIPPED',
           search_hotels: 'PENDING',
           search_attractions: 'PENDING',
           get_weather: 'PENDING'
@@ -147,24 +151,35 @@ export class TravelAgentOrchestrator {
 
         const providerErrors: ProviderErrorRecord[] = [];
 
-        // 1. Resolve Destination Coordinates
-        const coords = await destinationProvider.getCoordinates(destination);
-
         // 2. Query Providers with Complete Failure Isolation (Promise.allSettled)
-        // One failing provider must NEVER discard or abort successful results from others!
+        // If destIata cannot be resolved, DO NOT substitute GOI or search flights for an unrelated destination!
+        const flightPromise = destIata
+          ? flightService.searchFlights({
+              originAirport: origin,
+              destAirport: destIata,
+              departureDate,
+              returnDate,
+              travelers,
+              cabinClass: 'ECONOMY',
+              preferredAirlines: intent.preferredAirlines
+            })
+          : Promise.resolve({
+              results: [] as NormalizedFlightOffer[],
+              errorRecord: {
+                provider: 'FLIGHT_SERVICE',
+                endpoint: '/inventory/flights',
+                errorCode: 'DESTINATION_AIRPORT_UNRESOLVED',
+                message: `No commercial airport code (IATA) could be resolved for destination "${destination}". Flight discovery was skipped to prevent unrelated routing.`,
+                timestamp: new Date().toISOString(),
+                fallbackTriggered: false
+              }
+            });
+
         const [flightSettled, hotelSettled, attractionSettled, weatherSettled] = await Promise.allSettled([
-          flightService.searchFlights({
-            originAirport: origin,
-            destAirport: coords.iataCode || 'GOI',
-            departureDate,
-            returnDate,
-            travelers,
-            cabinClass: 'ECONOMY',
-            preferredAirlines: intent.preferredAirlines
-          }),
+          flightPromise,
           hotelService.searchHotels({
             destination,
-            cityIataCode: coords.iataCode || 'GOI',
+            cityIataCode: destIata,
             latitude: coords.latitude,
             longitude: coords.longitude,
             checkInDate: departureDate,
@@ -183,7 +198,7 @@ export class TravelAgentOrchestrator {
           if (flightSettled.value.errorRecord) {
             providerErrors.push(flightSettled.value.errorRecord);
           }
-          toolStatuses.search_flights = 'SUCCESS';
+          toolStatuses.search_flights = destIata ? 'SUCCESS' : 'SKIPPED';
         } else {
           logger.error('Flight provider failed completely', 'TravelWorkflow', flightSettled.reason);
           toolStatuses.search_flights = 'FAILED';
@@ -275,7 +290,7 @@ export class TravelAgentOrchestrator {
 
         const flightNarrative = bestFlight
           ? `• Flights [Quoted]: ${bestFlight.airlineName} (${bestFlight.flightNumber}) at ₹${bestFlight.totalPrice.toLocaleString('en-IN')} (${bestFlight.source}).`
-          : `• Flights: No flights discovered. Quoted cost: ₹0 (requires custom departure search).`;
+          : `• Flights: Direct flight search skipped or unavailable for "${destination}" (no commercial airport code resolved). Hotels and activities researched successfully.`;
 
         const hotelNarrative = bestHotel
           ? `• Accommodation [Quoted]: ${bestHotel.hotelName} (≥${intent.hotelMinRating}★) at ₹${bestHotel.totalPrice.toLocaleString('en-IN')} for stay (${bestHotel.source}).`

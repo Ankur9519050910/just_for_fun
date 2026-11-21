@@ -2,7 +2,7 @@ import { TravelIntent } from './types';
 import { UserPreferencesDto } from '../types/auth';
 
 // Validated IATA Airport Registry for major domestic and international hubs
-const AIRPORT_REGISTRY: Record<string, string> = {
+export const AIRPORT_REGISTRY: Record<string, string> = {
   // Major Indian Cities
   kolkata: 'CCU',
   calcutta: 'CCU',
@@ -129,11 +129,14 @@ export class IntentParser {
     }
 
     if (!destFound) {
-      const destRegex = /(?:trip|travel|holiday|vacation|tour|visit|going|heading)\s+(?:to|in|for)\s+([a-zA-Z\s]{2,25}?)(?=[,\.\?\!]|\s+(?:from|for|with|in|on|at|during|departing)|$)/i;
+      const destRegex = /(?:trip|travel|holiday|vacation|tour|visit|going|heading|destination\s+to|change\s+to|switch\s+to)\s+(?:to|in|for)?\s*([a-zA-Z\s]{2,25}?)(?=[,\.\?\!]|\s+(?:from|for|with|in|on|at|during|departing)|$)/i;
       const match = prompt.match(destRegex);
       if (match && match[1]) {
         const candidate = match[1].trim();
-        if (!['a', 'the', 'my', 'two', 'three', 'four', 'us', 'me', 'our'].includes(candidate.toLowerCase())) {
+        const lowerCandidate = candidate.toLowerCase();
+        const isStopword = ['a', 'the', 'my', 'two', 'three', 'four', 'us', 'me', 'our'].includes(lowerCandidate);
+        const isAmbiguous = AMBIGUOUS_WORDS.some((w) => lowerCandidate.includes(w));
+        if (!isStopword && !isAmbiguous) {
           intent.destination = candidate.charAt(0).toUpperCase() + candidate.slice(1);
         }
       }
@@ -213,11 +216,7 @@ export class IntentParser {
     if (isoDateMatch) {
       intent.startDate = isoDateMatch[1];
       intent.isApproximateDates = false;
-      if (intent.totalDays) {
-        const endObj = new Date(intent.startDate);
-        endObj.setDate(endObj.getDate() + intent.totalDays);
-        intent.endDate = endObj.toISOString().split('T')[0];
-      }
+      intent.tentativeMonth = undefined;
     } else {
       for (const [mName] of Object.entries(MONTH_NAMES)) {
         if (text.includes(`in ${mName}`) || text.includes(`during ${mName}`) || text.includes(`for ${mName}`)) {
@@ -228,10 +227,16 @@ export class IntentParser {
       }
     }
 
+    if (intent.startDate && intent.totalDays) {
+      const endObj = new Date(intent.startDate);
+      endObj.setDate(endObj.getDate() + intent.totalDays);
+      intent.endDate = endObj.toISOString().split('T')[0];
+    }
+
     // 6. Budget Extraction
     const budgetPatterns = [
-      /(?:₹|rs\.?|inr|budget\s*(?:is|of)?\s*)?\s*(\d+(?:\.\d+)?)\s*(?:lakhs?|l\b)/i,
-      /(?:budget|cost|spending|total)\s*(?:is|of)?\s*(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?/i,
+      /(?:₹|rs\.?|inr|budget\s*(?:is|of|to|around)?\s*)?\s*(\d+(?:\.\d+)?)\s*(?:lakhs?|l\b)/i,
+      /(?:budget|cost|spending|total)\s*(?:is|of|to|around)?\s*(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?/i,
       /(?:₹|rs\.?|inr)\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?/i,
       /(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?\s*(?:₹|rs\.?|inr|rupees|budget)/i
     ];
@@ -268,12 +273,20 @@ export class IntentParser {
 
     // 8. Missing Information Analysis
     const missingFields: string[] = [];
-    if (!intent.destination) {
+    const isDestinationMissing =
+      !intent.destination ||
+      AMBIGUOUS_WORDS.some((w) => intent.destination?.toLowerCase().includes(w));
+    if (isDestinationMissing) {
+      intent.destination = undefined;
       missingFields.push('destination');
     }
 
-    const isOriginMissing = !intent.origin || !VALID_IATA_CODES.has(intent.origin) || AMBIGUOUS_WORDS.some((w) => intent.origin?.toLowerCase().includes(w));
+    const isOriginMissing =
+      !intent.origin ||
+      !VALID_IATA_CODES.has(intent.origin) ||
+      AMBIGUOUS_WORDS.some((w) => intent.origin?.toLowerCase().includes(w));
     if (isOriginMissing) {
+      intent.origin = undefined;
       missingFields.push('origin');
     }
 

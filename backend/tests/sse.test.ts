@@ -212,4 +212,60 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
 
     expect(completedRuns.length).toBeGreaterThan(0);
   }, 30000);
+
+  it('4. should handle genuine client premature abort and transition AgentRun to CANCELLED', async () => {
+    const postData = JSON.stringify({
+      message: 'Plan a 5-day trip to Goa for two people from Kolkata with ₹50,000 budget'
+    });
+
+    await new Promise<void>((resolve) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: serverPort,
+          path: '/api/chat/stream',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${authToken}`
+          }
+        },
+        (res) => {
+          res.on('data', () => {
+            // As soon as the first chunk arrives from server, abruptly destroy client socket
+            req.destroy();
+            resolve();
+          });
+        }
+      );
+      req.on('error', () => {
+        // Expected socket hangup on destroyed client socket
+        resolve();
+      });
+      req.write(postData);
+      req.end();
+    });
+
+    // Wait for server-side disconnect handler & DB update to finalize
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Confirm no AgentRun was left in RUNNING status
+    const runningRuns = await prisma.agentRun.findMany({
+      where: {
+        userId,
+        status: 'RUNNING'
+      }
+    });
+    expect(runningRuns.length).toBe(0);
+
+    // Confirm that the aborted run transitioned to CANCELLED
+    const cancelledRuns = await prisma.agentRun.findMany({
+      where: {
+        userId,
+        status: 'CANCELLED'
+      }
+    });
+    expect(cancelledRuns.length).toBeGreaterThan(0);
+  }, 30000);
 });

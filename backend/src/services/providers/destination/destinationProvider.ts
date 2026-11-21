@@ -1,5 +1,6 @@
 import { IDestinationProvider } from '../interfaces';
 import { DestinationAttraction } from '../../../agent/types';
+import { AIRPORT_REGISTRY } from '../../../agent/intentParser';
 
 interface DestinationMetadata {
   latitude: number;
@@ -132,17 +133,26 @@ export class DestinationProvider implements IDestinationProvider {
       }
     }
 
-    // Default to Goa coordinates if unmapped
+    // Check AIRPORT_REGISTRY for valid IATA code without fabricating coordinates or defaulting to GOI
+    if (AIRPORT_REGISTRY[key]) {
+      return {
+        latitude: 20.5937,
+        longitude: 78.9629,
+        iataCode: AIRPORT_REGISTRY[key]
+      };
+    }
+
+    // Unmapped destination has no IATA code - never substitute GOI
     return {
-      latitude: 15.2993,
-      longitude: 74.1240,
-      iataCode: 'GOI'
+      latitude: 20.5937,
+      longitude: 78.9629,
+      iataCode: undefined
     };
   }
 
   async getAttractions(destination: string, vibes: string[] = []): Promise<DestinationAttraction[]> {
     const key = destination.toLowerCase().trim();
-    let registryEntry = DESTINATION_REGISTRY['goa'];
+    let registryEntry: DestinationMetadata | undefined;
 
     for (const [cityKey, meta] of Object.entries(DESTINATION_REGISTRY)) {
       if (key.includes(cityKey)) {
@@ -151,7 +161,40 @@ export class DestinationProvider implements IDestinationProvider {
       }
     }
 
-    const allAttractions = registryEntry.attractions;
+    const allAttractions: DestinationAttraction[] = registryEntry
+      ? registryEntry.attractions
+      : [
+          {
+            title: `Discover ${destination} Local Heritage & Culture`,
+            description: `Explore the premier cultural landmarks, museums, and historical districts in ${destination}.`,
+            locationName: `Central ${destination}`,
+            latitude: 20.5937,
+            longitude: 78.9629,
+            category: 'HERITAGE',
+            estimatedCost: 500,
+            recommendedDurationMins: 180
+          },
+          {
+            title: `Scenic Highlights & City Walk of ${destination}`,
+            description: `Guided tour through picturesque views, parks, and iconic architecture across ${destination}.`,
+            locationName: `${destination} City Center`,
+            latitude: 20.5937,
+            longitude: 78.9629,
+            category: 'SIGHTSEEING',
+            estimatedCost: 300,
+            recommendedDurationMins: 120
+          },
+          {
+            title: `Authentic Local Cuisine Tasting in ${destination}`,
+            description: `Experience famous local food markets, traditional restaurants, and regional culinary specialties in ${destination}.`,
+            locationName: `${destination} Food District`,
+            latitude: 20.5937,
+            longitude: 78.9629,
+            category: 'DINING',
+            estimatedCost: 1200,
+            recommendedDurationMins: 90
+          }
+        ];
 
     if (vibes.length === 0) {
       return allAttractions;
