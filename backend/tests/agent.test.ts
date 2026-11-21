@@ -3,6 +3,7 @@ import { createApp } from '../src/app';
 import { travelAgentOrchestrator } from '../src/agent/travelWorkflow';
 import { intentParser } from '../src/agent/intentParser';
 import { flightService, hotelService } from '../src/services/providers/providerFactory';
+import { destinationProvider } from '../src/services/providers/destination/destinationProvider';
 import { prisma } from '../src/db/prisma';
 import { signToken } from '../src/utils/jwt';
 
@@ -183,6 +184,29 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(first.amenities.length).toBeGreaterThan(0);
       expect(first.isMockData).toBe(true);
     });
+
+    it('should resolve coordinates for known and geocoded destinations and represent unknown ones as unresolved', async () => {
+      // 1. Resolved destination with airport
+      const goaCoords = await destinationProvider.getCoordinates('Goa');
+      expect(goaCoords.isResolved).toBe(true);
+      expect(goaCoords.latitude).toBeCloseTo(15.2993, 2);
+      expect(goaCoords.longitude).toBeCloseTo(74.1240, 2);
+      expect(goaCoords.iataCode).toBe('GOI');
+
+      // 2. Resolved destination without airport (e.g. Coorg)
+      const coorgCoords = await destinationProvider.getCoordinates('Coorg');
+      expect(coorgCoords.isResolved).toBe(true);
+      expect(coorgCoords.latitude).toBeCloseTo(12.3375, 2);
+      expect(coorgCoords.longitude).toBeCloseTo(75.8069, 2);
+      expect(coorgCoords.iataCode).toBeUndefined();
+
+      // 3. Completely unresolved destination
+      const unknownCoords = await destinationProvider.getCoordinates('NonExistentAtlantisXYZ999');
+      expect(unknownCoords.isResolved).toBe(false);
+      expect(unknownCoords.latitude).toBeUndefined();
+      expect(unknownCoords.longitude).toBeUndefined();
+      expect(unknownCoords.iataCode).toBeUndefined();
+    });
   });
 
   describe('3. LangGraph Stateful Workflow Execution & Resumption', () => {
@@ -240,6 +264,29 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       // Summary should note flight skipping and include transparent budget
       expect(state.summary).toContain('Coorg');
       expect(state.summary).toContain('Direct flight search skipped');
+    });
+
+    it('should handle completely unresolved destination without searching with fabricated coordinates', async () => {
+      const unknownThreadId = `test_thread_unknown_${Date.now()}`;
+      const state = await travelAgentOrchestrator.executeWorkflow({
+        userId: userAId,
+        conversationId: unknownThreadId,
+        threadId: unknownThreadId,
+        userPrompt: "Plan a 3-day trip to AtlantisCity from Kolkata starting 2026-12-10 with ₹40,000 budget"
+      });
+
+      expect(state.status).toBe('COMPLETED');
+      expect(state.extractedIntent.destination).toBe('AtlantisCity');
+      // Flights, hotels, attractions skipped - zero fabricated coordinates
+      expect(state.flightResults.length).toBe(0);
+      expect(state.hotelResults.length).toBe(0);
+      expect(state.attractionResults.length).toBe(0);
+      expect(state.toolStatuses.search_flights).toBe('SKIPPED');
+      expect(state.toolStatuses.search_hotels).toBe('SKIPPED');
+      expect(state.toolStatuses.search_attractions).toBe('SKIPPED');
+      // Summary includes transparent notice
+      expect(state.summary).toContain('Location unresolved');
+      expect(state.summary).toContain('fabricated coordinates');
     });
   });
 

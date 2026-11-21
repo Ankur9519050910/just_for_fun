@@ -141,15 +141,27 @@ export class TravelAgentOrchestrator {
         // 1. Resolve Destination Coordinates & Airport IATA
         const coords = await destinationProvider.getCoordinates(destination);
         const destIata = coords.iataCode;
+        const hasValidCoords = coords.isResolved && coords.latitude !== undefined && coords.longitude !== undefined;
 
         const toolStatuses: Record<string, ToolExecutionStatus> = {
           search_flights: destIata ? 'PENDING' : 'SKIPPED',
-          search_hotels: 'PENDING',
-          search_attractions: 'PENDING',
-          get_weather: 'PENDING'
+          search_hotels: hasValidCoords ? 'PENDING' : 'SKIPPED',
+          search_attractions: hasValidCoords ? 'PENDING' : 'SKIPPED',
+          get_weather: hasValidCoords ? 'PENDING' : 'SKIPPED'
         };
 
         const providerErrors: ProviderErrorRecord[] = [];
+
+        if (!coords.isResolved) {
+          providerErrors.push({
+            provider: 'DESTINATION_PROVIDER',
+            endpoint: '/destination/geocode',
+            errorCode: 'LOCATION_UNRESOLVED',
+            message: `Could not verify or geocode geographical coordinates for destination "${destination}". Hotel and activity searches were skipped to avoid fabricated results.`,
+            timestamp: new Date().toISOString(),
+            fallbackTriggered: false
+          });
+        }
 
         // 2. Query Providers with Complete Failure Isolation (Promise.allSettled)
         // If destIata cannot be resolved, DO NOT substitute GOI or search flights for an unrelated destination!
@@ -175,20 +187,44 @@ export class TravelAgentOrchestrator {
               }
             });
 
+        // Hotels: Only query if destination coordinates are verified
+        const hotelPromise = hasValidCoords
+          ? hotelService.searchHotels({
+              destination,
+              cityIataCode: destIata,
+              latitude: coords.latitude!,
+              longitude: coords.longitude!,
+              checkInDate: departureDate,
+              checkOutDate: returnDate || new Date(new Date(departureDate).getTime() + (intent.totalDays || 5) * 86400000).toISOString().split('T')[0],
+              guests: travelers,
+              minStarRating: intent.hotelMinRating || 4.0
+            })
+          : Promise.resolve({
+              results: [] as NormalizedHotelOffer[],
+              errorRecord: {
+                provider: 'HOTEL_SERVICE',
+                endpoint: '/inventory/hotels',
+                errorCode: 'DESTINATION_UNRESOLVED',
+                message: `Destination "${destination}" has unverified coordinates. Hotel search was skipped to prevent fabricated inventory.`,
+                timestamp: new Date().toISOString(),
+                fallbackTriggered: false
+              }
+            });
+
+        // Attractions & Weather: Only query if destination coordinates are verified
+        const attractionPromise = hasValidCoords
+          ? destinationProvider.getAttractions(destination, intent.vibe)
+          : Promise.resolve([] as DestinationAttraction[]);
+
+        const weatherPromise = hasValidCoords
+          ? weatherProvider.getForecast(coords.latitude!, coords.longitude!, departureDate, intent.totalDays || 5)
+          : Promise.resolve([] as WeatherForecastDay[]);
+
         const [flightSettled, hotelSettled, attractionSettled, weatherSettled] = await Promise.allSettled([
           flightPromise,
-          hotelService.searchHotels({
-            destination,
-            cityIataCode: destIata,
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-            checkInDate: departureDate,
-            checkOutDate: returnDate || new Date(new Date(departureDate).getTime() + (intent.totalDays || 5) * 86400000).toISOString().split('T')[0],
-            guests: travelers,
-            minStarRating: intent.hotelMinRating || 4.0
-          }),
-          destinationProvider.getAttractions(destination, intent.vibe),
-          weatherProvider.getForecast(coords.latitude, coords.longitude, departureDate, intent.totalDays || 5)
+          hotelPromise,
+          attractionPromise,
+          weatherPromise
         ]);
 
         // Process Flights with Isolation
@@ -219,7 +255,7 @@ export class TravelAgentOrchestrator {
           if (hotelSettled.value.errorRecord) {
             providerErrors.push(hotelSettled.value.errorRecord);
           }
-          toolStatuses.search_hotels = 'SUCCESS';
+          toolStatuses.search_hotels = hasValidCoords ? 'SUCCESS' : 'SKIPPED';
         } else {
           logger.error('Hotel provider failed completely', 'TravelWorkflow', hotelSettled.reason);
           toolStatuses.search_hotels = 'FAILED';
@@ -237,7 +273,7 @@ export class TravelAgentOrchestrator {
         let attractionResults: DestinationAttraction[] = [];
         if (attractionSettled.status === 'fulfilled') {
           attractionResults = attractionSettled.value;
-          toolStatuses.search_attractions = 'SUCCESS';
+          toolStatuses.search_attractions = hasValidCoords ? 'SUCCESS' : 'SKIPPED';
         } else {
           logger.error('Attraction provider failed', 'TravelWorkflow', attractionSettled.reason);
           toolStatuses.search_attractions = 'FAILED';
@@ -247,7 +283,7 @@ export class TravelAgentOrchestrator {
         let weatherForecast: WeatherForecastDay[] = [];
         if (weatherSettled.status === 'fulfilled') {
           weatherForecast = weatherSettled.value;
-          toolStatuses.get_weather = 'SUCCESS';
+          toolStatuses.get_weather = hasValidCoords ? 'SUCCESS' : 'SKIPPED';
         } else {
           logger.error('Weather provider failed', 'TravelWorkflow', weatherSettled.reason);
           toolStatuses.get_weather = 'FAILED';
@@ -318,7 +354,14 @@ export class TravelAgentOrchestrator {
           provenanceNotice = '\n\n✅ Provenance Verified: Inventory quotes retrieved from live provider APIs.';
         }
 
-        const summary = `I have completed the travel research for your ${days}-day trip to ${destination} for ${travelers} traveler(s).\n${flightNarrative}\n${hotelNarrative}\n${weatherDesc}\n${attractionsDesc}\n\n${budgetTransparencyTable}${provenanceNotice}`;
+        const isCompletelyUnresolved = state.flightResults.length === 0 && state.hotelResults.length === 0 && state.attractionResults.length === 0;
+
+        let summary = '';
+        if (isCompletelyUnresolved) {
+          summary = `I was unable to verify the geographical location for destination "${destination}".\n• Status: Location unresolved.\n• Notice: To prevent booking to incorrect or simulated regions, searches for flights, hotels, and attractions were omitted rather than using fabricated coordinates.\n• Recommendation: Please clarify the specific city or destination name (e.g., Goa, Jaipur, Paris, etc.) to proceed with travel discovery.`;
+        } else {
+          summary = `I have completed the travel research for your ${days}-day trip to ${destination} for ${travelers} traveler(s).\n${flightNarrative}\n${hotelNarrative}\n${weatherDesc}\n${attractionsDesc}\n\n${budgetTransparencyTable}${provenanceNotice}`;
+        }
 
         return {
           summary,

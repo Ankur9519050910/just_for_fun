@@ -129,7 +129,7 @@ export class IntentParser {
     }
 
     if (!destFound) {
-      const destRegex = /(?:trip|travel|holiday|vacation|tour|visit|going|heading|destination\s+to|change\s+to|switch\s+to)\s+(?:to|in|for)?\s*([a-zA-Z\s]{2,25}?)(?=[,\.\?\!]|\s+(?:from|for|with|in|on|at|during|departing)|$)/i;
+      const destRegex = /(?:trip|travel|holiday|vacation|tour|visit|going|heading|destination\s+to|change\s+to|switch\s+to)\s+(?:to|in|for)?\s*([a-zA-Z0-9\s]{2,25}?)(?=[,\.\?\!]|\s+(?:from|for|with|in|on|at|during|departing)|$)/i;
       const match = prompt.match(destRegex);
       if (match && match[1]) {
         const candidate = match[1].trim();

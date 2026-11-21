@@ -22,7 +22,7 @@ export interface IHotelProvider {
 
 export interface IDestinationProvider {
   getAttractions(destination: string, vibes?: string[]): Promise<DestinationAttraction[]>;
-  getCoordinates(destination: string): Promise<{ latitude: number; longitude: number; iataCode?: string }>;
+  getCoordinates(destination: string): Promise<{ latitude?: number; longitude?: number; iataCode?: string; isResolved: boolean }>;
 }
 
 export interface IWeatherProvider {

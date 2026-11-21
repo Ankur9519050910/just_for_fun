@@ -166,7 +166,15 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
   });
 
   it('3. should verify AgentRun terminal status after workflow completes', async () => {
+    const normalConv = await prisma.conversation.create({
+      data: {
+        userId,
+        title: `SSE Normal Completion Test ${Date.now()}`
+      }
+    });
+
     const postData = JSON.stringify({
+      conversationId: normalConv.id,
       message: 'Plan a 5-day trip to Goa for two people from Kolkata with ₹50,000 budget'
     });
 
@@ -193,30 +201,32 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
       req.end();
     });
 
-    // Check database to ensure no AgentRun was left in RUNNING status
-    const runningRuns = await prisma.agentRun.findMany({
+    // Check specific AgentRun created for this exact conversation
+    const exactRun = await prisma.agentRun.findFirst({
       where: {
-        userId,
-        status: 'RUNNING'
+        conversationId: normalConv.id
       }
     });
 
-    expect(runningRuns.length).toBe(0);
-
-    const completedRuns = await prisma.agentRun.findMany({
-      where: {
-        userId,
-        status: 'COMPLETED'
-      }
-    });
-
-    expect(completedRuns.length).toBeGreaterThan(0);
+    expect(exactRun).toBeDefined();
+    expect(exactRun!.status).toBe('COMPLETED');
+    expect(exactRun!.completedAt).toBeDefined();
   }, 30000);
 
   it('4. should handle genuine client premature abort and transition AgentRun to CANCELLED', async () => {
+    const abortConv = await prisma.conversation.create({
+      data: {
+        userId,
+        title: `SSE Abort Isolation Test ${Date.now()}`
+      }
+    });
+
     const postData = JSON.stringify({
+      conversationId: abortConv.id,
       message: 'Plan a 5-day trip to Goa for two people from Kolkata with ₹50,000 budget'
     });
+
+    let targetRunId: string | undefined;
 
     await new Promise<void>((resolve) => {
       const req = http.request(
@@ -232,7 +242,15 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
           }
         },
         (res) => {
-          res.on('data', () => {
+          res.on('data', async () => {
+            if (!targetRunId) {
+              const run = await prisma.agentRun.findFirst({
+                where: { conversationId: abortConv.id }
+              });
+              if (run) {
+                targetRunId = run.id;
+              }
+            }
             // As soon as the first chunk arrives from server, abruptly destroy client socket
             req.destroy();
             resolve();
@@ -248,24 +266,17 @@ describe('SSE Lifecycle & Progressive Streaming Integration Tests', () => {
     });
 
     // Wait for server-side disconnect handler & DB update to finalize
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 1200));
 
-    // Confirm no AgentRun was left in RUNNING status
-    const runningRuns = await prisma.agentRun.findMany({
+    // Confirm the EXACT AgentRun created for this request transitioned to CANCELLED
+    const exactRun = await prisma.agentRun.findFirst({
       where: {
-        userId,
-        status: 'RUNNING'
+        conversationId: abortConv.id
       }
     });
-    expect(runningRuns.length).toBe(0);
 
-    // Confirm that the aborted run transitioned to CANCELLED
-    const cancelledRuns = await prisma.agentRun.findMany({
-      where: {
-        userId,
-        status: 'CANCELLED'
-      }
-    });
-    expect(cancelledRuns.length).toBeGreaterThan(0);
+    expect(exactRun).toBeDefined();
+    expect(exactRun!.status).toBe('CANCELLED');
+    expect(exactRun!.completedAt).toBeDefined();
   }, 30000);
 });

@@ -1,11 +1,13 @@
+import axios from 'axios';
 import { IDestinationProvider } from '../interfaces';
 import { DestinationAttraction } from '../../../agent/types';
 import { AIRPORT_REGISTRY } from '../../../agent/intentParser';
+import { logger } from '../../../config/logger';
 
 interface DestinationMetadata {
   latitude: number;
   longitude: number;
-  iataCode: string;
+  iataCode?: string;
   attractions: DestinationAttraction[];
 }
 
@@ -117,36 +119,110 @@ const DESTINATION_REGISTRY: Record<string, DestinationMetadata> = {
         recommendedDurationMins: 180
       }
     ]
+  },
+  jaipur: {
+    latitude: 26.9124,
+    longitude: 75.7873,
+    iataCode: 'JAI',
+    attractions: [
+      {
+        title: 'Amber Palace & Fort',
+        description: 'Historic hilltop fort built with red sandstone and marble featuring artistic Hindu style elements.',
+        locationName: 'Devisinghpura, Amer, Jaipur',
+        latitude: 26.9855,
+        longitude: 75.8513,
+        category: 'HERITAGE',
+        estimatedCost: 500,
+        recommendedDurationMins: 240
+      }
+    ]
+  },
+  coorg: {
+    latitude: 12.3375,
+    longitude: 75.8069,
+    iataCode: undefined, // No commercial airport - flights will be skipped, hotels and nature activities proceed
+    attractions: [
+      {
+        title: 'Abbey Falls & Coffee Estate Trail',
+        description: 'Cascading waterfall amidst lush spice and coffee plantations in the Western Ghats.',
+        locationName: 'Madikeri, Coorg',
+        latitude: 12.4516,
+        longitude: 75.7176,
+        category: 'RELAXATION',
+        estimatedCost: 150,
+        recommendedDurationMins: 120
+      }
+    ]
+  },
+  paris: {
+    latitude: 48.8566,
+    longitude: 2.3522,
+    iataCode: 'CDG',
+    attractions: [
+      {
+        title: 'Eiffel Tower & Champ de Mars',
+        description: 'Iconic wrought-iron lattice tower on the Champ de Mars offering panoramic views of Paris.',
+        locationName: 'Champ de Mars, Paris',
+        latitude: 48.8584,
+        longitude: 2.2945,
+        category: 'SIGHTSEEING',
+        estimatedCost: 2500,
+        recommendedDurationMins: 180
+      }
+    ]
   }
 };
 
 export class DestinationProvider implements IDestinationProvider {
-  async getCoordinates(destination: string): Promise<{ latitude: number; longitude: number; iataCode?: string }> {
+  async getCoordinates(destination: string): Promise<{ latitude?: number; longitude?: number; iataCode?: string; isResolved: boolean }> {
     const key = destination.toLowerCase().trim();
+
+    // 1. Check verified local registry
     for (const [cityKey, meta] of Object.entries(DESTINATION_REGISTRY)) {
       if (key.includes(cityKey)) {
         return {
           latitude: meta.latitude,
           longitude: meta.longitude,
-          iataCode: meta.iataCode
+          iataCode: meta.iataCode,
+          isResolved: true
         };
       }
     }
 
-    // Check AIRPORT_REGISTRY for valid IATA code without fabricating coordinates or defaulting to GOI
-    if (AIRPORT_REGISTRY[key]) {
-      return {
-        latitude: 20.5937,
-        longitude: 78.9629,
-        iataCode: AIRPORT_REGISTRY[key]
-      };
+    // 2. Reliable geocoding integration via Open-Meteo Geocoding API
+    try {
+      const response = await axios.get('https://geocoding-api.open-meteo.com/v1/search', {
+        params: {
+          name: destination,
+          count: 1,
+          language: 'en',
+          format: 'json'
+        },
+        timeout: 4000
+      });
+
+      const results = response.data?.results;
+      if (results && results.length > 0) {
+        const top = results[0];
+        const registeredIata = AIRPORT_REGISTRY[key];
+        return {
+          latitude: top.latitude,
+          longitude: top.longitude,
+          iataCode: registeredIata,
+          isResolved: true
+        };
+      }
+    } catch (err: any) {
+      logger.warn(`Geocoding lookup failed for destination "${destination}": ${err.message}`, 'DestinationProvider');
     }
 
-    // Unmapped destination has no IATA code - never substitute GOI
+    // 3. If geocoding fails, represent destination as UNRESOLVED
+    // Never fabricate India-centre or generic default coordinates
     return {
-      latitude: 20.5937,
-      longitude: 78.9629,
-      iataCode: undefined
+      latitude: undefined,
+      longitude: undefined,
+      iataCode: undefined,
+      isResolved: false
     };
   }
 
@@ -161,15 +237,25 @@ export class DestinationProvider implements IDestinationProvider {
       }
     }
 
-    const allAttractions: DestinationAttraction[] = registryEntry
-      ? registryEntry.attractions
-      : [
+    if (!registryEntry) {
+      // Check if coordinates can be resolved through geocoding
+      const coords = await this.getCoordinates(destination);
+      if (!coords.isResolved || coords.latitude === undefined || coords.longitude === undefined) {
+        // Do not fabricate attractions for unresolved destinations
+        return [];
+      }
+
+      registryEntry = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        iataCode: coords.iataCode,
+        attractions: [
           {
             title: `Discover ${destination} Local Heritage & Culture`,
             description: `Explore the premier cultural landmarks, museums, and historical districts in ${destination}.`,
             locationName: `Central ${destination}`,
-            latitude: 20.5937,
-            longitude: 78.9629,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
             category: 'HERITAGE',
             estimatedCost: 500,
             recommendedDurationMins: 180
@@ -178,8 +264,8 @@ export class DestinationProvider implements IDestinationProvider {
             title: `Scenic Highlights & City Walk of ${destination}`,
             description: `Guided tour through picturesque views, parks, and iconic architecture across ${destination}.`,
             locationName: `${destination} City Center`,
-            latitude: 20.5937,
-            longitude: 78.9629,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
             category: 'SIGHTSEEING',
             estimatedCost: 300,
             recommendedDurationMins: 120
@@ -188,13 +274,17 @@ export class DestinationProvider implements IDestinationProvider {
             title: `Authentic Local Cuisine Tasting in ${destination}`,
             description: `Experience famous local food markets, traditional restaurants, and regional culinary specialties in ${destination}.`,
             locationName: `${destination} Food District`,
-            latitude: 20.5937,
-            longitude: 78.9629,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
             category: 'DINING',
             estimatedCost: 1200,
             recommendedDurationMins: 90
           }
-        ];
+        ]
+      };
+    }
+
+    const allAttractions: DestinationAttraction[] = registryEntry.attractions;
 
     if (vibes.length === 0) {
       return allAttractions;
