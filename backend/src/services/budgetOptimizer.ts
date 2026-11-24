@@ -27,7 +27,14 @@ export function optimizeBudget(input: BudgetOptimizerInput): BudgetOptimizationR
   // 5-day trip represents 4 hotel nights; 1-day trip is 1 day-use/night minimum
   const nights = Math.max(1, totalDays > 1 ? totalDays - 1 : 1);
 
-  // 2. Calculate Flights Cost (respecting pricing contract: totalPrice vs pricePerPerson * travelers)
+  // 2. Calculate Flights Cost
+  // PRICING CONTRACT:
+  // - NormalizedFlightOffer.totalPrice represents the total quoted fare for the complete booking party.
+  //   When totalPrice is present (> 0), it is respected as the authoritative total quoted fare.
+  // - If totalPrice is absent or 0, but pricePerPerson is available (> 0), totalPrice is derived
+  //   as pricePerPerson * travelers.
+  // - Limitation: If a downstream provider returns a per-person fare in totalPrice without an explicit
+  //   indicator, we avoid silently multiplying an ambiguous price.
   let flightsCost = 0;
   if (input.flightResults && input.flightResults.length > 0) {
     const validFlightCosts = input.flightResults
@@ -36,10 +43,6 @@ export function optimizeBudget(input: BudgetOptimizerInput): BudgetOptimizationR
         const rawPerPerson = Number(f.pricePerPerson);
 
         if (!isNaN(rawTotal) && rawTotal > 0) {
-          // If totalPrice equals pricePerPerson but travelers > 1, provider returned per-person in totalPrice
-          if (!isNaN(rawPerPerson) && rawPerPerson > 0 && rawTotal === rawPerPerson && travelers > 1) {
-            return rawPerPerson * travelers;
-          }
           return rawTotal;
         }
 

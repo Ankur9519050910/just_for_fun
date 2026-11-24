@@ -471,13 +471,14 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(res.hotelsCost).toBe(17500);
     });
 
-    it('should correctly account for multi-traveler flight pricing when provider supplies per-person fare', () => {
-      const res = optimizeBudget({
+    it('should respect totalPrice contract and derive from pricePerPerson when totalPrice is omitted', () => {
+      // 1. totalPrice provided -> respected directly without silent heuristic multiplication
+      const res1 = optimizeBudget({
         flightResults: [
           {
-            id: 'f_pax',
+            id: 'f_total',
             pricePerPerson: 5500,
-            totalPrice: 5500, // Provider returned per-person price in totalPrice
+            totalPrice: 5500,
             isMockData: true
           } as any
         ],
@@ -487,8 +488,25 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         totalDays: 3,
         travelers: 3
       });
+      expect(res1.flightsCost).toBe(5500);
 
-      expect(res.flightsCost).toBe(16500); // 5500 * 3 travelers
+      // 2. totalPrice omitted/zero -> derived as pricePerPerson * travelers
+      const res2 = optimizeBudget({
+        flightResults: [
+          {
+            id: 'f_pax',
+            pricePerPerson: 5500,
+            totalPrice: 0,
+            isMockData: true
+          } as any
+        ],
+        hotelResults: [],
+        attractionResults: [],
+        targetBudget: 40000,
+        totalDays: 3,
+        travelers: 3
+      });
+      expect(res2.flightsCost).toBe(16500); // 5500 * 3 travelers
     });
 
     it('should include activity costs and avoid duplicate double-counting', () => {
@@ -713,6 +731,83 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         .set('Authorization', `Bearer ${userAToken}`)
         .send({ totalDays: 0 });
       expect(res2.status).toBe(400);
+
+      // Non-integer totalDays rejected
+      const res3 = await request(app)
+        .post(`/api/trips/${trip.id}/optimize`)
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({ totalDays: 3.5 });
+      expect(res3.status).toBe(400);
+
+      // Non-integer travelers rejected
+      const res4 = await request(app)
+        .post(`/api/trips/${trip.id}/optimize`)
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({ travelers: 2.2 });
+      expect(res4.status).toBe(400);
+    });
+
+    it('should leave weather unavailable when no forecast matches exact date and never use index fallback', () => {
+      const days = planItinerary({
+        attractionResults: [],
+        hotelResults: [],
+        weatherForecast: [
+          // Forecast dates do NOT match the itinerary dates (2026-12-10, 2026-12-11)
+          { date: '2026-12-25', condition: 'Snow', maxTempC: -2, minTempC: -10, precipitationProbPercent: 90 }
+        ],
+        startDate: '2026-12-10',
+        totalDays: 2,
+        destinationName: 'Goa'
+      });
+
+      // Neither day should inherit the 2026-12-25 Snow forecast
+      expect(days[0].theme).not.toContain('Snow');
+      expect(days[1].theme).not.toContain('Snow');
+      expect(days[0].theme).toBe('Day 1: Arrival, Hotel Check-in & Goa Central');
+      expect(days[1].theme).toBe('Day 2: Leisure, Highlights & Farewell');
+    });
+
+    it('should prevent schedule overflow by moving excess activities to next day and avoiding 23:59 clamping', () => {
+      // 8 activities each 120 minutes long. Total 960 mins + transit gaps = ~1200 mins.
+      // Day 1 starts post-checkin at 15:30 (930m). Only 2 activities can fit before 22:00 (1320m).
+      const heavyAttractions = Array.from({ length: 8 }, (_, idx) => ({
+        title: `Heavy Attraction ${idx + 1}`,
+        description: `Description ${idx + 1}`,
+        locationName: `Location ${idx + 1}`,
+        latitude: 15.4 + idx * 0.01,
+        longitude: 73.8 + idx * 0.01,
+        category: 'SIGHTSEEING' as const,
+        estimatedCost: 100,
+        recommendedDurationMins: 120
+      }));
+
+      const days = planItinerary({
+        attractionResults: heavyAttractions,
+        hotelResults: [{ hotelName: 'Central Resort', latitude: 15.4, longitude: 73.8 } as any],
+        weatherForecast: [],
+        startDate: '2026-12-10',
+        totalDays: 2,
+        destinationName: 'Goa'
+      });
+
+      expect(days.length).toBe(2);
+
+      // Verify that no activity on any day is clamped to 23:59 or has end time past 22:00 (1320 mins)
+      days.forEach((day) => {
+        day.activities.forEach((act) => {
+          if (act.startTime && act.endTime) {
+            expect(act.startTime).not.toBe('23:59');
+            expect(act.endTime).not.toBe('23:59');
+
+            const [endH, endM] = act.endTime.split(':').map(Number);
+            const endMins = endH * 60 + endM;
+            expect(endMins).toBeLessThanOrEqual(1320); // Not past 22:00
+          }
+        });
+      });
+
+      // Excess activities from Day 1 should have been moved to Day 2 or marked flexible
+      expect(days[1].activities.length).toBeGreaterThan(0);
     });
   });
 });

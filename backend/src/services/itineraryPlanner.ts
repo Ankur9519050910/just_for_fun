@@ -251,12 +251,37 @@ export function planItinerary(input: ItineraryPlannerInput): DayItinerary[] {
       });
 
       currentMins = 930; // 15:30 PM (after 15:00 check-in + 30m buffer)
+      const MAX_DAY_MINS = 1320; // 22:00 (10:00 PM) maximum scheduled hour
 
       // Post-checkin Activities
       postCheckinAttractions.forEach((attraction) => {
         const duration = attraction.recommendedDurationMins || (attraction.category === 'DINING' ? 90 : 75);
         const startMins = currentMins;
         const endMins = startMins + duration;
+
+        // Schedule overflow protection: prevent unrealistic night hours or 23:59 clamping
+        if (endMins > MAX_DAY_MINS) {
+          if (d < totalDays) {
+            // Move remaining attraction to the next day
+            dayBuckets[d].push(attraction);
+            return;
+          }
+
+          // On final day, mark as unscheduled/self-paced rather than assigning invalid or clamped times
+          activities.push({
+            timeSlot: 'EVENING',
+            startTime: '',
+            endTime: '',
+            title: attraction.title,
+            description: `${attraction.description} (Self-paced / optional evening visit)`,
+            locationName: attraction.locationName,
+            latitude: isValidCoord(attraction.latitude, attraction.longitude) ? attraction.latitude : null,
+            longitude: isValidCoord(attraction.latitude, attraction.longitude) ? attraction.longitude : null,
+            estimatedCost: attraction.estimatedCost || 0,
+            category: attraction.category
+          });
+          return;
+        }
 
         activities.push({
           timeSlot: getTimeSlot(startMins),
@@ -276,11 +301,36 @@ export function planItinerary(input: ItineraryPlannerInput): DayItinerary[] {
     } else {
       // Day 2..totalDays: Sequential chronological schedule with transit gaps
       let currentMins = 570; // 09:30 AM start
+      const MAX_DAY_MINS = 1320; // 22:00 (10:00 PM)
 
       dayAttractions.forEach((attraction) => {
         const duration = attraction.recommendedDurationMins || (attraction.category === 'DINING' ? 90 : 75);
         const startMins = currentMins;
         const endMins = startMins + duration;
+
+        // Schedule overflow protection: prevent unrealistic night hours or 23:59 clamping
+        if (endMins > MAX_DAY_MINS) {
+          if (d < totalDays) {
+            // Move remaining attraction to the next day
+            dayBuckets[d].push(attraction);
+            return;
+          }
+
+          // On final day, mark as unscheduled/self-paced rather than assigning invalid or clamped times
+          activities.push({
+            timeSlot: 'EVENING',
+            startTime: '',
+            endTime: '',
+            title: attraction.title,
+            description: `${attraction.description} (Self-paced / optional evening visit)`,
+            locationName: attraction.locationName,
+            latitude: isValidCoord(attraction.latitude, attraction.longitude) ? attraction.latitude : null,
+            longitude: isValidCoord(attraction.latitude, attraction.longitude) ? attraction.longitude : null,
+            estimatedCost: attraction.estimatedCost || 0,
+            category: attraction.category
+          });
+          return;
+        }
 
         activities.push({
           timeSlot: getTimeSlot(startMins),
@@ -309,8 +359,8 @@ export function planItinerary(input: ItineraryPlannerInput): DayItinerary[] {
       geographicCluster = `${namedLocations[0]} Area`;
     }
 
-    // 6. Weather matched by exact date
-    const forecast = input.weatherForecast?.find((f) => f.date === dayDate) || input.weatherForecast?.[d - 1];
+    // 6. Weather matched strictly by exact date (no array-index fallback)
+    const forecast = input.weatherForecast?.find((f) => f.date === dayDate);
     let weatherNote = '';
     if (forecast) {
       weatherNote = ` (${forecast.maxTempC}°C, ${forecast.condition})`;

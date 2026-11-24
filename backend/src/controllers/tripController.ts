@@ -81,7 +81,7 @@ export class TripController {
         return;
       }
 
-      if (totalDays !== undefined && (typeof totalDays !== 'number' || isNaN(totalDays) || totalDays < 1)) {
+      if (totalDays !== undefined && (typeof totalDays !== 'number' || isNaN(totalDays) || !Number.isInteger(totalDays) || totalDays < 1)) {
         res.status(400).json({
           success: false,
           error: { code: 'INVALID_INPUT', message: 'totalDays must be a positive integer' }
@@ -89,7 +89,7 @@ export class TripController {
         return;
       }
 
-      if (travelers !== undefined && (typeof travelers !== 'number' || isNaN(travelers) || travelers < 1)) {
+      if (travelers !== undefined && (typeof travelers !== 'number' || isNaN(travelers) || !Number.isInteger(travelers) || travelers < 1)) {
         res.status(400).json({
           success: false,
           error: { code: 'INVALID_INPUT', message: 'travelers must be a positive integer' }
