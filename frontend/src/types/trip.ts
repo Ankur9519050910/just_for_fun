@@ -98,6 +98,50 @@ export interface Trip {
   updatedAt: string;
 }
 
+export interface ItineraryActivityItem {
+  timeSlot: 'MORNING' | 'AFTERNOON' | 'EVENING' | 'NIGHT';
+  startTime: string;
+  endTime: string;
+  title: string;
+  description: string;
+  locationName: string;
+  latitude: number;
+  longitude: number;
+  estimatedCost: number;
+  category: string;
+  bookingUrl?: string;
+}
+
+export interface DayItinerary {
+  dayNumber: number;
+  date: string;
+  theme: string;
+  geographicCluster: string;
+  activities: ItineraryActivityItem[];
+  dayTotalCost: number;
+}
+
+export interface BudgetCategoryAllocation {
+  category: string;
+  amount: number;
+  percentage: number;
+}
+
+export interface BudgetOptimizationResult {
+  targetBudget: number;
+  currency: string;
+  totalQuotedInventory: number;
+  flightsCost: number;
+  hotelsCost: number;
+  activitiesCost: number;
+  contingencyBuffer: number;
+  totalProjectedSpend: number;
+  remainingSurplusOrDeficit: number;
+  status: 'OPTIMAL' | 'UNDER_BUDGET' | 'OVER_BUDGET';
+  categoryBreakdown: BudgetCategoryAllocation[];
+  recommendations: string[];
+}
+
 export interface DashboardSummary {
   stats: {
     totalTrips: number;

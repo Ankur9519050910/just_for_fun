@@ -24,4 +24,8 @@ router.get('/:tripId', (req, res, next) => {
   tripController.getTripById(req, res, next);
 });
 
+router.post('/:tripId/optimize', (req, res, next) => {
+  tripController.optimizeTrip(req, res, next);
+});
+
 export const tripRoutes = router;

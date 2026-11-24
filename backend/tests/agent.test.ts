@@ -4,6 +4,8 @@ import { travelAgentOrchestrator } from '../src/agent/travelWorkflow';
 import { intentParser } from '../src/agent/intentParser';
 import { flightService, hotelService } from '../src/services/providers/providerFactory';
 import { destinationProvider } from '../src/services/providers/destination/destinationProvider';
+import { optimizeBudget } from '../src/services/budgetOptimizer';
+import { planItinerary } from '../src/services/itineraryPlanner';
 import { prisma } from '../src/db/prisma';
 import { signToken } from '../src/utils/jwt';
 
@@ -377,6 +379,166 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.results.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('7. Phase 4: Budget Optimization & Itinerary Planner', () => {
+    it('should compute deterministic budget breakdown and detect UNDER_BUDGET status', () => {
+      const mockFlight = {
+        id: 'f1',
+        airlineCode: '6E',
+        airlineName: 'IndiGo',
+        flightNumber: '6E-201',
+        originAirport: 'CCU',
+        destAirport: 'GOI',
+        departureTime: '2026-12-10T10:00:00Z',
+        arrivalTime: '2026-12-10T13:00:00Z',
+        durationMins: 180,
+        stops: 0,
+        cabinClass: 'ECONOMY',
+        pricePerPerson: 6000,
+        totalPrice: 12000,
+        currency: 'INR',
+        offerReference: 'mock_ref',
+        source: 'SIMULATED_MOCK_FIXTURE' as const,
+        isMockData: true,
+        retrievedAt: new Date().toISOString(),
+        searchParams: {}
+      };
+
+      const mockHotel = {
+        id: 'h1',
+        hotelName: 'Taj Holiday Village',
+        hotelId: 'taj_goa',
+        address: 'Candolim',
+        city: 'Goa',
+        latitude: 15.5178,
+        longitude: 73.7686,
+        starRating: 5,
+        userRating: 4.8,
+        pricePerNight: 4000,
+        totalPrice: 20000,
+        currency: 'INR',
+        roomType: 'Deluxe Sea View',
+        amenities: ['Pool', 'Spa', 'WiFi'],
+        imageUrl: null,
+        source: 'SIMULATED_MOCK_FIXTURE' as const,
+        isMockData: true,
+        retrievedAt: new Date().toISOString(),
+        searchParams: {}
+      };
+
+      const res = optimizeBudget({
+        flightResults: [mockFlight],
+        hotelResults: [mockHotel],
+        attractionResults: [
+          { title: 'Fort Aguada', description: 'Historic fort', locationName: 'Sinquerim', latitude: 15.4925, longitude: 73.7736, category: 'HERITAGE', estimatedCost: 500, recommendedDurationMins: 90 }
+        ],
+        targetBudget: 60000,
+        totalDays: 5,
+        travelers: 2,
+        currency: 'INR'
+      });
+
+      expect(res.flightsCost).toBe(12000);
+      expect(res.hotelsCost).toBe(20000); // 4000 * 5 days
+      expect(res.activitiesCost).toBe(500);
+      expect(res.contingencyBuffer).toBe(Math.round((12000 + 20000 + 500) * 0.10)); // 3250
+      expect(res.totalProjectedSpend).toBe(12000 + 20000 + 500 + 3250); // 35750
+      expect(res.status).toBe('UNDER_BUDGET');
+      expect(res.categoryBreakdown.length).toBe(4);
+      expect(res.recommendations.length).toBeGreaterThan(0);
+    });
+
+    it('should detect OVER_BUDGET status and provide actionable downgrade suggestions', () => {
+      const res = optimizeBudget({
+        flightResults: [{ totalPrice: 30000 } as any],
+        hotelResults: [{ pricePerNight: 8000 } as any],
+        attractionResults: [],
+        targetBudget: 40000,
+        totalDays: 5,
+        travelers: 2,
+        currency: 'INR'
+      });
+
+      // spend: 30000 + 40000 = 70000 + 10% contingency = 77000
+      expect(res.status).toBe('OVER_BUDGET');
+      expect(res.remainingSurplusOrDeficit).toBeLessThan(0);
+      expect(res.recommendations.some(r => r.includes('exceeds target budget'))).toBe(true);
+    });
+
+    it('should generate geographically clustered itinerary with Day 1 hotel check-in', () => {
+      const days = planItinerary({
+        attractionResults: [
+          { title: 'Fort Aguada', description: 'Fort', locationName: 'Sinquerim', latitude: 15.4925, longitude: 73.7736, category: 'HERITAGE', estimatedCost: 300, recommendedDurationMins: 90 },
+          { title: 'Basilica of Bom Jesus', description: 'Church', locationName: 'Old Goa', latitude: 15.5009, longitude: 73.9116, category: 'HERITAGE', estimatedCost: 200, recommendedDurationMins: 60 },
+          { title: 'Palolem Beach', description: 'Beach', locationName: 'Canacona', latitude: 15.0100, longitude: 74.0232, category: 'RELAXATION', estimatedCost: 0, recommendedDurationMins: 120 },
+          { title: 'Fishermans Wharf', description: 'Dining', locationName: 'Cavelossim', latitude: 15.1700, longitude: 73.9400, category: 'DINING', estimatedCost: 1500, recommendedDurationMins: 90 }
+        ],
+        hotelResults: [
+          { hotelName: 'Goa Marriott Resort', latitude: 15.4889, longitude: 73.8117 } as any
+        ],
+        weatherForecast: [
+          { date: '2026-12-10', condition: 'Sunny', maxTempC: 30, minTempC: 22, precipitationProbPercent: 0 }
+        ],
+        startDate: '2026-12-10',
+        totalDays: 3,
+        destinationName: 'Goa'
+      });
+
+      expect(days.length).toBe(3);
+      expect(days[0].dayNumber).toBe(1);
+      expect(days[0].date).toBe('2026-12-10');
+      // Day 1 has hotel check-in as first activity
+      expect(days[0].activities[0].title).toContain('Hotel Check-in');
+      expect(days[0].activities[0].locationName).toBe('Goa Marriott Resort');
+      // Weather note included in theme
+      expect(days[0].theme).toContain('Sunny');
+    });
+
+    it('should include itinerary and budget breakdown in completed workflow execution', async () => {
+      const state = await travelAgentOrchestrator.executeWorkflow({
+        userId: userAId,
+        conversationId: 'phase4_test_conv',
+        threadId: 'phase4_test_thread',
+        userPrompt: 'Plan a 3-day trip to Goa from Kolkata starting 2026-12-10 with budget 50000 for 2 people'
+      });
+
+      expect(state.status).toBe('COMPLETED');
+      expect(state.itinerary).toBeDefined();
+      expect(state.itinerary!.length).toBe(3);
+      expect(state.budgetBreakdown).toBeDefined();
+      expect(state.budgetBreakdown!.totalProjectedSpend).toBeGreaterThan(0);
+      expect(state.budgetBreakdown!.categoryBreakdown.length).toBe(4);
+    }, 30000);
+
+    it('should optimize existing trip budget via POST /api/trips/:tripId/optimize', async () => {
+      const trip = await prisma.trip.create({
+        data: {
+          userId: userAId,
+          title: 'Existing Trip to Goa',
+          destination: 'Goa',
+          origin: 'CCU',
+          startDate: new Date('2026-12-10'),
+          endDate: new Date('2026-12-14'),
+          totalDays: 4,
+          travelers: 2,
+          totalBudget: 45000,
+          currency: 'INR',
+          status: 'PLANNING'
+        }
+      });
+
+      const res = await request(app)
+        .post(`/api/trips/${trip.id}/optimize`)
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({ targetBudget: 50000 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.optimization).toBeDefined();
+      expect(res.body.data.optimization.targetBudget).toBe(50000);
+      expect(res.body.data.optimization.currency).toBe('INR');
     });
   });
 });

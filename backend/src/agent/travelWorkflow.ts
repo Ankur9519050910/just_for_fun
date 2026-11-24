@@ -7,12 +7,16 @@ import {
   WeatherForecastDay,
   ToolExecutionStatus,
   ProviderErrorRecord,
-  TravelAgentState
+  TravelAgentState,
+  DayItinerary,
+  BudgetOptimizationResult
 } from './types';
 import { intentParser } from './intentParser';
 import { flightService, hotelService } from '../services/providers/providerFactory';
 import { destinationProvider } from '../services/providers/destination/destinationProvider';
 import { weatherProvider } from '../services/providers/weather/openMeteoProvider';
+import { planItinerary } from '../services/itineraryPlanner';
+import { optimizeBudget } from '../services/budgetOptimizer';
 import { getCheckpointer } from './checkpointer';
 import { logger } from '../config/logger';
 import { SSEStreamHandler } from '../utils/sseStream';
@@ -59,6 +63,14 @@ export const TravelStateAnnotation = Annotation.Root({
   weatherForecast: Annotation<WeatherForecastDay[]>({
     reducer: (_, update) => update,
     default: () => []
+  }),
+  itinerary: Annotation<DayItinerary[] | undefined>({
+    reducer: (_, update) => update,
+    default: () => undefined
+  }),
+  budgetBreakdown: Annotation<BudgetOptimizationResult | undefined>({
+    reducer: (_, update) => update,
+    default: () => undefined
   }),
   toolStatuses: Annotation<Record<string, ToolExecutionStatus>>({
     reducer: (curr, update) => ({ ...curr, ...update }),
@@ -372,6 +384,43 @@ export class TravelAgentOrchestrator {
           lastUpdated: new Date().toISOString()
         };
       })
+      .addNode('generate_itinerary', async (state: TravelWorkflowState) => {
+        logger.info('Node: generate_itinerary - Generating day-by-day itinerary and optimizing budget', 'TravelWorkflow');
+        const intent = state.extractedIntent;
+        const destination = intent.destination || 'Goa';
+        const totalDays = intent.totalDays || 5;
+        const startDate = intent.startDate || new Date(Date.now() + 21 * 86400000).toISOString().split('T')[0];
+        const targetBudget = intent.totalBudget || 50000;
+        const travelers = intent.travelers || 2;
+
+        const itinerary = planItinerary({
+          attractionResults: state.attractionResults,
+          hotelResults: state.hotelResults,
+          weatherForecast: state.weatherForecast,
+          startDate,
+          totalDays,
+          vibe: intent.vibe,
+          destinationName: destination
+        });
+
+        const budgetBreakdown = optimizeBudget({
+          flightResults: state.flightResults,
+          hotelResults: state.hotelResults,
+          attractionResults: state.attractionResults,
+          targetBudget,
+          totalDays,
+          travelers,
+          currency: intent.currency || 'INR'
+        });
+
+        return {
+          itinerary,
+          budgetBreakdown,
+          status: 'COMPLETED',
+          activeStep: 'generate_itinerary',
+          lastUpdated: new Date().toISOString()
+        };
+      })
       .addEdge(START, 'analyze_intent')
       .addConditionalEdges('analyze_intent', (state: TravelWorkflowState) => {
         if (state.missingInformation && state.missingInformation.length > 0) {
@@ -381,7 +430,8 @@ export class TravelAgentOrchestrator {
       })
       .addEdge('ask_clarification', END)
       .addEdge('research_inventory', 'synthesize_plan')
-      .addEdge('synthesize_plan', END);
+      .addEdge('synthesize_plan', 'generate_itinerary')
+      .addEdge('generate_itinerary', END);
 
     const checkpointer = await getCheckpointer();
     this.graphApp = workflow.compile({ checkpointer });
@@ -507,6 +557,16 @@ export class TravelAgentOrchestrator {
           sseHandler?.emit('plan_ready', {
             summary: nodeOutput.summary,
             status: 'COMPLETED'
+          });
+          sseHandler?.emit('workflow_step', {
+            step: 'generate_itinerary',
+            status: 'RUNNING',
+            description: 'Generating geographically clustered itinerary and optimizing budget breakdown...'
+          });
+        } else if (nodeName === 'generate_itinerary') {
+          sseHandler?.emit('itinerary_ready', {
+            days: nodeOutput.itinerary || [],
+            budget: nodeOutput.budgetBreakdown
           });
         }
 

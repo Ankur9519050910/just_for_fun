@@ -5,6 +5,7 @@ import { SSEStreamHandler } from '../utils/sseStream';
 import { flightService, hotelService } from '../services/providers/providerFactory';
 import { AppError } from '../middleware/errorHandler';
 import { logger } from '../config/logger';
+import { DayItinerary, ItineraryActivityItem } from '../agent/types';
 
 export class ChatController {
   async handleStreamMessage(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -202,6 +203,38 @@ export class ChatController {
             }
           }
         });
+
+        // Persist generated itinerary and activities if available
+        if (finalState.itinerary && finalState.itinerary.length > 0) {
+          const totalCost = finalState.budgetBreakdown?.totalProjectedSpend || 0;
+          await prisma.itinerary.create({
+            data: {
+              tripId: trip.id,
+              version: 1,
+              isApproved: false,
+              summary: finalState.summary || `${trip.title} Itinerary`,
+              totalCost: totalCost as any,
+              activities: {
+                create: finalState.itinerary.flatMap((day: DayItinerary) =>
+                  day.activities.map((a: ItineraryActivityItem, idx: number) => ({
+                    dayNumber: day.dayNumber,
+                    timeSlot: a.timeSlot,
+                    startTime: a.startTime,
+                    endTime: a.endTime,
+                    title: a.title,
+                    description: a.description,
+                    locationName: a.locationName,
+                    latitude: a.latitude,
+                    longitude: a.longitude,
+                    estimatedCost: a.estimatedCost as any,
+                    category: a.category,
+                    sortOrder: idx
+                  }))
+                )
+              }
+            }
+          });
+        }
 
         // Link trip to conversation
         await prisma.conversation.update({

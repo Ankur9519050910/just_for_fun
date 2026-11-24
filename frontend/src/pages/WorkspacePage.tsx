@@ -10,11 +10,21 @@ import {
   User,
   AlertCircle,
   Clock,
-  Compass
+  Compass,
+  Calendar,
+  Map as MapIcon
 } from 'lucide-react';
 import { Navbar } from '../components/layout/Navbar';
 import { sendChatMessageStream } from '../api/chatStreamApi';
-import { NormalizedFlightOffer, NormalizedHotelOffer } from '../types/trip';
+import {
+  NormalizedFlightOffer,
+  NormalizedHotelOffer,
+  DayItinerary,
+  BudgetOptimizationResult
+} from '../types/trip';
+import { ItineraryTab } from '../components/workspace/ItineraryTab';
+import { BudgetTab } from '../components/workspace/BudgetTab';
+import { MapTab } from '../components/workspace/MapTab';
 
 interface ChatMessage {
   id: string;
@@ -34,7 +44,7 @@ export const WorkspacePage: React.FC = () => {
     }
   ]);
   const [inputText, setInputText] = useState('');
-  const [activeTab, setActiveTab] = useState<'flights' | 'hotels' | 'attractions' | 'budget'>('flights');
+  const [activeTab, setActiveTab] = useState<'flights' | 'hotels' | 'attractions' | 'itinerary' | 'map' | 'budget'>('flights');
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
@@ -45,6 +55,9 @@ export const WorkspacePage: React.FC = () => {
   const [hotels, setHotels] = useState<NormalizedHotelOffer[]>([]);
   const [attractions, setAttractions] = useState<any[]>([]);
   const [weather, setWeather] = useState<any[]>([]);
+  const [itinerary, setItinerary] = useState<DayItinerary[]>([]);
+  const [budgetBreakdown, setBudgetBreakdown] = useState<BudgetOptimizationResult | null>(null);
+  const [destinationCoords, setDestinationCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [extractedIntent, setExtractedIntent] = useState<Record<string, any> | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -108,10 +121,23 @@ export const WorkspacePage: React.FC = () => {
           },
           onHotelResults: (data) => {
             setHotels(data.hotels);
+            if (data.hotels?.[0]?.latitude && data.hotels?.[0]?.longitude) {
+              setDestinationCoords({ lat: data.hotels[0].latitude, lng: data.hotels[0].longitude });
+            }
           },
           onDestinationResults: (data) => {
             setAttractions(data.attractions);
             setWeather(data.weather);
+            if (data.attractions?.[0]?.latitude && data.attractions?.[0]?.longitude) {
+              setDestinationCoords({ lat: data.attractions[0].latitude, lng: data.attractions[0].longitude });
+            }
+          },
+          onItineraryReady: (data) => {
+            setItinerary(data.days);
+            setBudgetBreakdown(data.budget);
+            if (data.days && data.days.length > 0) {
+              setActiveTab('itinerary');
+            }
           },
           onPlanReady: (plan) => {
             setMessages((prev) => [
@@ -318,6 +344,30 @@ export const WorkspacePage: React.FC = () => {
               </button>
 
               <button
+                onClick={() => setActiveTab('itinerary')}
+                className={`flex items-center gap-2 px-4 py-2.5 border-b-2 text-xs font-semibold transition-colors ${
+                  activeTab === 'itinerary'
+                    ? 'border-teal-400 text-teal-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Itinerary {itinerary.length > 0 ? `(${itinerary.length}D)` : ''}</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('map')}
+                className={`flex items-center gap-2 px-4 py-2.5 border-b-2 text-xs font-semibold transition-colors ${
+                  activeTab === 'map'
+                    ? 'border-teal-400 text-teal-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <MapIcon className="w-3.5 h-3.5" />
+                <span>Map View</span>
+              </button>
+
+              <button
                 onClick={() => setActiveTab('budget')}
                 className={`flex items-center gap-2 px-4 py-2.5 border-b-2 text-xs font-semibold transition-colors ${
                   activeTab === 'budget'
@@ -326,7 +376,7 @@ export const WorkspacePage: React.FC = () => {
                 }`}
               >
                 <Compass className="w-3.5 h-3.5" />
-                <span>Budget Preview</span>
+                <span>Budget Optimizer</span>
               </button>
             </div>
 
@@ -527,64 +577,24 @@ export const WorkspacePage: React.FC = () => {
               </div>
             )}
 
+            {activeTab === 'itinerary' && (
+              <ItineraryTab itinerary={itinerary} />
+            )}
+
+            {activeTab === 'map' && (
+              <MapTab
+                itinerary={itinerary}
+                hotels={hotels}
+                destinationCoords={destinationCoords}
+                destinationName={extractedIntent?.destination}
+              />
+            )}
+
             {activeTab === 'budget' && (
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider mb-4">
-                  Deterministic Budget Optimization
-                </h3>
-                <div className="space-y-4">
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-300 mb-1">
-                      <span>Flights (₹{flights[0]?.totalPrice || 12400})</span>
-                      <span>{Math.round(((flights[0]?.totalPrice || 12400) / (extractedIntent?.totalBudget || 50000)) * 100)}%</span>
-                    </div>
-                    <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-                      <div
-                        className="h-full bg-teal-500 rounded-full"
-                        style={{ width: `${Math.min(100, ((flights[0]?.totalPrice || 12400) / (extractedIntent?.totalBudget || 50000)) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-300 mb-1">
-                      <span>Hotels (₹{hotels[0]?.totalPrice || 16800})</span>
-                      <span>{Math.round(((hotels[0]?.totalPrice || 16800) / (extractedIntent?.totalBudget || 50000)) * 100)}%</span>
-                    </div>
-                    <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-                      <div
-                        className="h-full bg-emerald-500 rounded-full"
-                        style={{ width: `${Math.min(100, ((hotels[0]?.totalPrice || 16800) / (extractedIntent?.totalBudget || 50000)) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-300 mb-1">
-                      <span>Activities, Dining & Buffer (~₹8,000)</span>
-                      <span>16%</span>
-                    </div>
-                    <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-                      <div className="h-full bg-cyan-500 rounded-full" style={{ width: '16%' }} />
-                    </div>
-                  </div>
-
-                  <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-slate-400">Total Estimated Spend</p>
-                      <h4 className="text-xl font-bold text-white mt-0.5">
-                        ₹{((flights[0]?.totalPrice || 12400) + (hotels[0]?.totalPrice || 16800) + 8000).toLocaleString('en-IN')}
-                      </h4>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs text-slate-400">Target Budget</p>
-                      <h4 className="text-xl font-bold text-teal-400 mt-0.5">
-                        ₹{(extractedIntent?.totalBudget || 50000).toLocaleString('en-IN')}
-                      </h4>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <BudgetTab
+                budget={budgetBreakdown}
+                targetBudget={extractedIntent?.totalBudget}
+              />
             )}
           </div>
         </div>

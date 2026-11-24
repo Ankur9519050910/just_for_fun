@@ -1,4 +1,4 @@
-import { NormalizedFlightOffer, NormalizedHotelOffer } from '../types/trip';
+import { NormalizedFlightOffer, NormalizedHotelOffer, DayItinerary, BudgetOptimizationResult } from '../types/trip';
 
 export interface ChatStreamCallbacks {
   onWorkflowStep?: (step: { step: string; status: string; description: string }) => void;
@@ -9,6 +9,7 @@ export interface ChatStreamCallbacks {
   onFlightResults?: (data: { flights: NormalizedFlightOffer[]; count: number; source: string }) => void;
   onHotelResults?: (data: { hotels: NormalizedHotelOffer[]; count: number; source: string }) => void;
   onDestinationResults?: (data: { attractions: any[]; weather: any[] }) => void;
+  onItineraryReady?: (data: { days: DayItinerary[]; budget: BudgetOptimizationResult }) => void;
   onPlanReady?: (plan: { summary: string; status: string }) => void;
   onDone?: (data: { conversationId: string; threadId: string; status: string }) => void;
   onError?: (error: { code: string; message: string }) => void;
@@ -111,6 +112,9 @@ export async function sendChatMessageStream(
             break;
           case 'destination_results':
             callbacks.onDestinationResults?.(parsed);
+            break;
+          case 'itinerary_ready':
+            callbacks.onItineraryReady?.(parsed);
             break;
           case 'plan_ready':
             callbacks.onPlanReady?.(parsed);

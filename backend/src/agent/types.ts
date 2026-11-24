@@ -118,6 +118,50 @@ export interface TravelIntent {
   travelPace: 'RELAXED' | 'BALANCED' | 'PACKED';
 }
 
+export interface ItineraryActivityItem {
+  timeSlot: 'MORNING' | 'AFTERNOON' | 'EVENING' | 'NIGHT';
+  startTime: string; // e.g. "09:00"
+  endTime: string; // e.g. "12:00"
+  title: string;
+  description: string;
+  locationName: string;
+  latitude: number;
+  longitude: number;
+  estimatedCost: number;
+  category: 'HERITAGE' | 'SIGHTSEEING' | 'DINING' | 'ADVENTURE' | 'RELAXATION' | 'TRANSIT';
+  bookingUrl?: string;
+}
+
+export interface DayItinerary {
+  dayNumber: number;
+  date: string; // YYYY-MM-DD
+  theme: string;
+  geographicCluster: string;
+  activities: ItineraryActivityItem[];
+  dayTotalCost: number;
+}
+
+export interface BudgetCategoryAllocation {
+  category: string;
+  amount: number;
+  percentage: number;
+}
+
+export interface BudgetOptimizationResult {
+  targetBudget: number;
+  currency: string;
+  totalQuotedInventory: number;
+  flightsCost: number;
+  hotelsCost: number;
+  activitiesCost: number;
+  contingencyBuffer: number;
+  totalProjectedSpend: number;
+  remainingSurplusOrDeficit: number;
+  status: 'OPTIMAL' | 'UNDER_BUDGET' | 'OVER_BUDGET';
+  categoryBreakdown: BudgetCategoryAllocation[];
+  recommendations: string[];
+}
+
 export interface TravelAgentState {
   userId: string;
   conversationId: string;
@@ -136,6 +180,8 @@ export interface TravelAgentState {
   hotelResults: NormalizedHotelOffer[];
   attractionResults: DestinationAttraction[];
   weatherForecast: WeatherForecastDay[];
+  itinerary?: DayItinerary[];
+  budgetBreakdown?: BudgetOptimizationResult;
   toolStatuses: Record<string, ToolExecutionStatus>;
   providerErrors: ProviderErrorRecord[];
   retryCount: number;
@@ -156,6 +202,7 @@ export type SSEEventType =
   | 'flight_results'
   | 'hotel_results'
   | 'destination_results'
+  | 'itinerary_ready'
   | 'plan_ready'
   | 'done'
   | 'error';
