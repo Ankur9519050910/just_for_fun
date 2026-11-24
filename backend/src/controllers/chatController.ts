@@ -224,8 +224,8 @@ export class ChatController {
                     title: a.title,
                     description: a.description,
                     locationName: a.locationName,
-                    latitude: a.latitude,
-                    longitude: a.longitude,
+                    latitude: typeof a.latitude === 'number' && !isNaN(a.latitude) ? a.latitude : 0,
+                    longitude: typeof a.longitude === 'number' && !isNaN(a.longitude) ? a.longitude : 0,
                     estimatedCost: a.estimatedCost as any,
                     category: a.category,
                     sortOrder: idx

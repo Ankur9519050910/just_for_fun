@@ -125,8 +125,8 @@ export interface ItineraryActivityItem {
   title: string;
   description: string;
   locationName: string;
-  latitude: number;
-  longitude: number;
+  latitude?: number | null;
+  longitude?: number | null;
   estimatedCost: number;
   category: 'HERITAGE' | 'SIGHTSEEING' | 'DINING' | 'ADVENTURE' | 'RELAXATION' | 'TRANSIT';
   bookingUrl?: string;

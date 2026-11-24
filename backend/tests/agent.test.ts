@@ -383,7 +383,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
   });
 
   describe('7. Phase 4: Budget Optimization & Itinerary Planner', () => {
-    it('should compute deterministic budget breakdown and detect UNDER_BUDGET status', () => {
+    it('should calculate 4 nights of hotel for a 5-day trip and detect UNDER_BUDGET status', () => {
       const mockFlight = {
         id: 'f1',
         airlineCode: '6E',
@@ -417,7 +417,7 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         starRating: 5,
         userRating: 4.8,
         pricePerNight: 4000,
-        totalPrice: 20000,
+        totalPrice: 0, // Force pricePerNight * nights calculation
         currency: 'INR',
         roomType: 'Deluxe Sea View',
         amenities: ['Pool', 'Spa', 'WiFi'],
@@ -435,19 +435,77 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
           { title: 'Fort Aguada', description: 'Historic fort', locationName: 'Sinquerim', latitude: 15.4925, longitude: 73.7736, category: 'HERITAGE', estimatedCost: 500, recommendedDurationMins: 90 }
         ],
         targetBudget: 60000,
-        totalDays: 5,
+        totalDays: 5, // 5 days = 4 nights
         travelers: 2,
         currency: 'INR'
       });
 
       expect(res.flightsCost).toBe(12000);
-      expect(res.hotelsCost).toBe(20000); // 4000 * 5 days
+      expect(res.hotelsCost).toBe(16000); // 4000 * 4 nights (5-day stay represents 4 nights)
       expect(res.activitiesCost).toBe(500);
-      expect(res.contingencyBuffer).toBe(Math.round((12000 + 20000 + 500) * 0.10)); // 3250
-      expect(res.totalProjectedSpend).toBe(12000 + 20000 + 500 + 3250); // 35750
+      expect(res.contingencyBuffer).toBe(Math.round((12000 + 16000 + 500) * 0.10)); // 2850
+      expect(res.totalProjectedSpend).toBe(12000 + 16000 + 500 + 2850); // 31350
       expect(res.status).toBe('UNDER_BUDGET');
       expect(res.categoryBreakdown.length).toBe(4);
       expect(res.recommendations.length).toBeGreaterThan(0);
+    });
+
+    it('should prefer provider actual quoted totalPrice when complete stay is represented', () => {
+      const res = optimizeBudget({
+        flightResults: [],
+        hotelResults: [
+          {
+            id: 'h2',
+            hotelName: 'Resort Package',
+            pricePerNight: 5000,
+            totalPrice: 17500, // Discounted 4-night package rate vs 20000
+            isMockData: true
+          } as any
+        ],
+        attractionResults: [],
+        targetBudget: 30000,
+        totalDays: 5,
+        travelers: 2
+      });
+
+      expect(res.hotelsCost).toBe(17500);
+    });
+
+    it('should correctly account for multi-traveler flight pricing when provider supplies per-person fare', () => {
+      const res = optimizeBudget({
+        flightResults: [
+          {
+            id: 'f_pax',
+            pricePerPerson: 5500,
+            totalPrice: 5500, // Provider returned per-person price in totalPrice
+            isMockData: true
+          } as any
+        ],
+        hotelResults: [],
+        attractionResults: [],
+        targetBudget: 40000,
+        totalDays: 3,
+        travelers: 3
+      });
+
+      expect(res.flightsCost).toBe(16500); // 5500 * 3 travelers
+    });
+
+    it('should include activity costs and avoid duplicate double-counting', () => {
+      const res = optimizeBudget({
+        flightResults: [],
+        hotelResults: [],
+        attractionResults: [
+          { title: 'Scuba Diving', locationName: 'Grand Island', estimatedCost: 2500 } as any,
+          { title: 'Museum Visit', locationName: 'Panaji', estimatedCost: 300 } as any,
+          { title: 'Scuba Diving', locationName: 'Grand Island', estimatedCost: 2500 } as any // Duplicate
+        ],
+        targetBudget: 20000,
+        totalDays: 2,
+        travelers: 1
+      });
+
+      expect(res.activitiesCost).toBe(2800); // 2500 + 300
     });
 
     it('should detect OVER_BUDGET status and provide actionable downgrade suggestions', () => {
@@ -456,44 +514,106 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         hotelResults: [{ pricePerNight: 8000 } as any],
         attractionResults: [],
         targetBudget: 40000,
-        totalDays: 5,
+        totalDays: 5, // 4 nights * 8000 = 32000
         travelers: 2,
         currency: 'INR'
       });
 
-      // spend: 30000 + 40000 = 70000 + 10% contingency = 77000
+      // spend: 30000 + 32000 = 62000 + 10% contingency (6200) = 68200
       expect(res.status).toBe('OVER_BUDGET');
       expect(res.remainingSurplusOrDeficit).toBeLessThan(0);
       expect(res.recommendations.some(r => r.includes('exceeds target budget'))).toBe(true);
     });
 
-    it('should generate geographically clustered itinerary with Day 1 hotel check-in', () => {
+    it('should implement genuine geographic clustering grouping nearby attractions into the same day', () => {
+      // North Goa cluster (~15.5 lat, 73.76 lon) vs South Goa cluster (~15.0 lat, 74.0 lon) separated by ~60km
+      const north1 = { title: 'Baga Beach', description: 'Famous beach', locationName: 'Baga', latitude: 15.5553, longitude: 73.7517, category: 'RELAXATION' as const, estimatedCost: 0, recommendedDurationMins: 90 };
+      const north2 = { title: 'Anjuna Flea Market', description: 'Weekly market', locationName: 'Anjuna', latitude: 15.5800, longitude: 73.7420, category: 'SIGHTSEEING' as const, estimatedCost: 100, recommendedDurationMins: 90 };
+      const south1 = { title: 'Palolem Beach', description: 'Scenic crescent beach', locationName: 'Canacona', latitude: 15.0100, longitude: 74.0232, category: 'RELAXATION' as const, estimatedCost: 0, recommendedDurationMins: 90 };
+      const south2 = { title: 'Agonda Beach', description: 'Quiet pristine beach', locationName: 'Agonda', latitude: 15.0450, longitude: 73.9870, category: 'RELAXATION' as const, estimatedCost: 0, recommendedDurationMins: 90 };
+
       const days = planItinerary({
-        attractionResults: [
-          { title: 'Fort Aguada', description: 'Fort', locationName: 'Sinquerim', latitude: 15.4925, longitude: 73.7736, category: 'HERITAGE', estimatedCost: 300, recommendedDurationMins: 90 },
-          { title: 'Basilica of Bom Jesus', description: 'Church', locationName: 'Old Goa', latitude: 15.5009, longitude: 73.9116, category: 'HERITAGE', estimatedCost: 200, recommendedDurationMins: 60 },
-          { title: 'Palolem Beach', description: 'Beach', locationName: 'Canacona', latitude: 15.0100, longitude: 74.0232, category: 'RELAXATION', estimatedCost: 0, recommendedDurationMins: 120 },
-          { title: 'Fishermans Wharf', description: 'Dining', locationName: 'Cavelossim', latitude: 15.1700, longitude: 73.9400, category: 'DINING', estimatedCost: 1500, recommendedDurationMins: 90 }
-        ],
-        hotelResults: [
-          { hotelName: 'Goa Marriott Resort', latitude: 15.4889, longitude: 73.8117 } as any
-        ],
-        weatherForecast: [
-          { date: '2026-12-10', condition: 'Sunny', maxTempC: 30, minTempC: 22, precipitationProbPercent: 0 }
-        ],
+        attractionResults: [north1, south1, north2, south2], // Interleaved order
+        hotelResults: [{ hotelName: 'North Goa Villa', latitude: 15.5500, longitude: 73.7500 } as any],
+        weatherForecast: [],
         startDate: '2026-12-10',
-        totalDays: 3,
+        totalDays: 2,
         destinationName: 'Goa'
       });
 
-      expect(days.length).toBe(3);
-      expect(days[0].dayNumber).toBe(1);
+      expect(days.length).toBe(2);
+      // North attractions should be clustered together in one day, South in the other
+      const day1Titles = days[0].activities.map(a => a.title);
+      const day2Titles = days[1].activities.map(a => a.title);
+
+      const northInDay1 = day1Titles.includes('Baga Beach') && day1Titles.includes('Anjuna Flea Market');
+      const northInDay2 = day2Titles.includes('Baga Beach') && day2Titles.includes('Anjuna Flea Market');
+      expect(northInDay1 || northInDay2).toBe(true);
+    });
+
+    it('should not fabricate hotel coordinates when hotel location is unresolved', () => {
+      const days = planItinerary({
+        attractionResults: [{ title: 'Sight', description: 'Historic sight', locationName: 'Town', latitude: 12.0, longitude: 75.0, category: 'HERITAGE', estimatedCost: 100, recommendedDurationMins: 60 }],
+        hotelResults: [{ hotelName: 'Mystery Hotel' } as any], // No coordinates
+        weatherForecast: [],
+        startDate: '2026-12-10',
+        totalDays: 1,
+        destinationName: 'Unknown City'
+      });
+
+      const checkin = days[0].activities.find(a => a.title.includes('Check-in'));
+      expect(checkin).toBeDefined();
+      expect(checkin!.latitude).toBeNull();
+      expect(checkin!.longitude).toBeNull();
+    });
+
+    it('should generate non-overlapping chronological activity schedules with travel gaps', () => {
+      const days = planItinerary({
+        attractionResults: [
+          { title: 'Morning Spot', description: 'Morning activity', locationName: 'Loc 1', latitude: 15.5, longitude: 73.8, category: 'HERITAGE', estimatedCost: 100, recommendedDurationMins: 60 },
+          { title: 'Afternoon Spot', description: 'Afternoon adventure', locationName: 'Loc 2', latitude: 15.51, longitude: 73.81, category: 'ADVENTURE', estimatedCost: 500, recommendedDurationMins: 90 },
+          { title: 'Dinner Spot', description: 'Evening dinner', locationName: 'Loc 3', latitude: 15.52, longitude: 73.82, category: 'DINING', estimatedCost: 1000, recommendedDurationMins: 90 }
+        ],
+        hotelResults: [{ hotelName: 'Resort', latitude: 15.5, longitude: 73.8 } as any],
+        weatherForecast: [],
+        startDate: '2026-12-10',
+        totalDays: 2,
+        destinationName: 'Goa'
+      });
+
+      const timeToMins = (t: string) => {
+        const [h, m] = t.split(':').map(Number);
+        return h * 60 + m;
+      };
+
+      days.forEach(day => {
+        for (let i = 0; i < day.activities.length - 1; i++) {
+          const currentEnd = timeToMins(day.activities[i].endTime);
+          const nextStart = timeToMins(day.activities[i + 1].startTime);
+          // Strict non-overlap: next activity starts on or after the previous activity ends
+          expect(nextStart).toBeGreaterThanOrEqual(currentEnd);
+        }
+      });
+    });
+
+    it('should match weather forecast by exact date rather than array index', () => {
+      const days = planItinerary({
+        attractionResults: [],
+        hotelResults: [],
+        weatherForecast: [
+          // Array in reverse order of dates
+          { date: '2026-12-11', condition: 'Thunderstorm', maxTempC: 24, minTempC: 20, precipitationProbPercent: 80 },
+          { date: '2026-12-10', condition: 'Clear Sky', maxTempC: 32, minTempC: 22, precipitationProbPercent: 0 }
+        ],
+        startDate: '2026-12-10',
+        totalDays: 2,
+        destinationName: 'Goa'
+      });
+
       expect(days[0].date).toBe('2026-12-10');
-      // Day 1 has hotel check-in as first activity
-      expect(days[0].activities[0].title).toContain('Hotel Check-in');
-      expect(days[0].activities[0].locationName).toBe('Goa Marriott Resort');
-      // Weather note included in theme
-      expect(days[0].theme).toContain('Sunny');
+      expect(days[0].theme).toContain('Clear Sky');
+      expect(days[1].date).toBe('2026-12-11');
+      expect(days[1].theme).toContain('Thunderstorm');
     });
 
     it('should include itinerary and budget breakdown in completed workflow execution', async () => {
@@ -512,11 +632,64 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
       expect(state.budgetBreakdown!.categoryBreakdown.length).toBe(4);
     }, 30000);
 
-    it('should optimize existing trip budget via POST /api/trips/:tripId/optimize', async () => {
+    it('should optimize existing trip budget and include saved itinerary activity expenses', async () => {
       const trip = await prisma.trip.create({
         data: {
           userId: userAId,
-          title: 'Existing Trip to Goa',
+          title: 'Existing Trip with Activities',
+          destination: 'Goa',
+          origin: 'CCU',
+          startDate: new Date('2026-12-10'),
+          endDate: new Date('2026-12-14'),
+          totalDays: 4,
+          travelers: 2,
+          totalBudget: 45000,
+          currency: 'INR',
+          status: 'PLANNING',
+          itineraries: {
+            create: {
+              version: 1,
+              summary: 'Saved Itinerary',
+              totalCost: 15000,
+              activities: {
+                create: [
+                  {
+                    dayNumber: 1,
+                    timeSlot: 'MORNING',
+                    title: 'Dudhsagar Trek',
+                    description: 'Waterfalls trek',
+                    locationName: 'Dudhsagar',
+                    latitude: 15.3144,
+                    longitude: 74.3143,
+                    estimatedCost: 3500,
+                    category: 'ADVENTURE',
+                    sortOrder: 0
+                  }
+                ]
+              }
+            }
+          }
+        }
+      });
+
+      const res = await request(app)
+        .post(`/api/trips/${trip.id}/optimize`)
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({ targetBudget: 50000 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.optimization).toBeDefined();
+      // Saved activity cost should be included!
+      expect(res.body.data.optimization.activitiesCost).toBe(3500);
+      expect(res.body.data.optimization.targetBudget).toBe(50000);
+    });
+
+    it('should reject invalid parameters on trip optimization endpoint', async () => {
+      const trip = await prisma.trip.create({
+        data: {
+          userId: userAId,
+          title: 'Validation Test Trip',
           destination: 'Goa',
           origin: 'CCU',
           startDate: new Date('2026-12-10'),
@@ -529,16 +702,17 @@ describe('Phase 3: Stateful Agent & Inventory Discovery Suite', () => {
         }
       });
 
-      const res = await request(app)
+      const res1 = await request(app)
         .post(`/api/trips/${trip.id}/optimize`)
         .set('Authorization', `Bearer ${userAToken}`)
-        .send({ targetBudget: 50000 });
+        .send({ targetBudget: -100 });
+      expect(res1.status).toBe(400);
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.optimization).toBeDefined();
-      expect(res.body.data.optimization.targetBudget).toBe(50000);
-      expect(res.body.data.optimization.currency).toBe('INR');
+      const res2 = await request(app)
+        .post(`/api/trips/${trip.id}/optimize`)
+        .set('Authorization', `Bearer ${userAToken}`)
+        .send({ totalDays: 0 });
+      expect(res2.status).toBe(400);
     });
   });
 });

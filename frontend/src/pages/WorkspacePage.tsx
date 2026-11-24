@@ -587,6 +587,7 @@ export const WorkspacePage: React.FC = () => {
                 hotels={hotels}
                 destinationCoords={destinationCoords}
                 destinationName={extractedIntent?.destination}
+                currency={extractedIntent?.currency || 'INR'}
               />
             )}
 

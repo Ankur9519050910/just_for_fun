@@ -16,54 +16,97 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow
 });
 
+/**
+ * Escapes unsafe characters to prevent XSS in Leaflet popup HTML.
+ */
+function escapeHtml(unsafe: string | null | undefined): string {
+  if (!unsafe) return '';
+  return String(unsafe)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function isValidLatLon(lat?: number | null, lng?: number | null): lat is number {
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    !isNaN(lat) &&
+    !isNaN(lng) &&
+    (lat !== 0 || lng !== 0)
+  );
+}
+
 interface MapTabProps {
   itinerary: DayItinerary[];
   hotels: NormalizedHotelOffer[];
   destinationCoords?: { lat: number; lng: number } | null;
   destinationName?: string;
+  currency?: string;
 }
 
 export const MapTab: React.FC<MapTabProps> = ({
   itinerary,
   hotels,
   destinationCoords,
-  destinationName
+  destinationName,
+  currency = 'INR'
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
 
-  // Collect all unique activity coordinates from the itinerary
+  // Filter only activities with genuine, valid coordinates
   const allActivities: Array<{ activity: ItineraryActivityItem; dayNumber: number }> = [];
   itinerary.forEach((day) => {
     day.activities.forEach((act) => {
-      if (act.latitude && act.longitude) {
+      if (isValidLatLon(act.latitude, act.longitude)) {
         allActivities.push({ activity: act, dayNumber: day.dayNumber });
       }
     });
   });
 
-  const hasPins = allActivities.length > 0 || hotels.length > 0;
+  const validHotels = hotels.filter((h) => isValidLatLon(h.latitude, h.longitude));
+  const hasPins = allActivities.length > 0 || validHotels.length > 0;
+  const hasValidDestCoords = isValidLatLon(destinationCoords?.lat, destinationCoords?.lng);
+  const canRenderMap = hasPins || hasValidDestCoords;
+
+  // Fingerprint for genuine data change detection (re-renders even when array lengths remain identical)
+  const dataFingerprint = JSON.stringify({
+    hotels: validHotels.map((h) => [h.id, h.latitude, h.longitude, h.hotelName, h.pricePerNight, h.starRating]),
+    activities: allActivities.map((a) => [a.activity.title, a.activity.latitude, a.activity.longitude, a.activity.estimatedCost, a.dayNumber]),
+    dest: hasValidDestCoords ? [destinationCoords!.lat, destinationCoords!.lng] : null,
+    currency
+  });
+
+  const currencySymbol = currency === 'INR' ? '₹' : `${currency} `;
 
   useEffect(() => {
-    if (!mapContainerRef.current) return;
+    if (!mapContainerRef.current || !canRenderMap) return;
 
-    // Determine initial center
-    let centerLat = destinationCoords?.lat ?? 15.2993;
-    let centerLng = destinationCoords?.lng ?? 74.1240;
+    // Determine initial center without hardcoded fallbacks
+    let centerLat: number | null = null;
+    let centerLng: number | null = null;
 
-    if (hotels.length > 0 && hotels[0].latitude && hotels[0].longitude) {
-      centerLat = hotels[0].latitude;
-      centerLng = hotels[0].longitude;
+    if (hasValidDestCoords) {
+      centerLat = destinationCoords!.lat;
+      centerLng = destinationCoords!.lng;
+    } else if (validHotels.length > 0) {
+      centerLat = validHotels[0].latitude;
+      centerLng = validHotels[0].longitude;
     } else if (allActivities.length > 0) {
-      centerLat = allActivities[0].activity.latitude;
-      centerLng = allActivities[0].activity.longitude;
+      centerLat = allActivities[0].activity.latitude!;
+      centerLng = allActivities[0].activity.longitude!;
     }
+
+    if (centerLat === null || centerLng === null) return;
 
     // Initialize Map
     const map = L.map(mapContainerRef.current).setView([centerLat, centerLng], 11);
     mapInstanceRef.current = map;
 
-    // Dark-themed CartoDB tile layer for sleek dark UI
+    // Dark-themed CartoDB tile layer
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
@@ -73,9 +116,8 @@ export const MapTab: React.FC<MapTabProps> = ({
 
     const bounds = L.latLngBounds([]);
 
-    // 1. Plot Hotel Markers (Blue pin marker)
-    hotels.forEach((hotel) => {
-      if (!hotel.latitude || !hotel.longitude) return;
+    // 1. Plot Hotel Markers
+    validHotels.forEach((hotel) => {
       const latLng = L.latLng(hotel.latitude, hotel.longitude);
       bounds.extend(latLng);
 
@@ -91,13 +133,19 @@ export const MapTab: React.FC<MapTabProps> = ({
         popupAnchor: [0, -14]
       });
 
+      // Escape all dynamic content to eliminate XSS risks
+      const safeName = escapeHtml(hotel.hotelName);
+      const safeAddress = escapeHtml(hotel.address || hotel.city);
+      const safeRating = escapeHtml(String(hotel.starRating || 4));
+      const safePrice = Number(hotel.pricePerNight || 0).toLocaleString('en-IN');
+
       const popupContent = `
         <div style="font-family: sans-serif; min-width: 180px; padding: 2px;">
-          <h4 style="margin: 0 0 4px 0; font-size: 13px; font-weight: bold; color: #0f172a;">${hotel.hotelName}</h4>
-          <p style="margin: 0 0 4px 0; font-size: 11px; color: #475569;">${hotel.address || hotel.city}</p>
+          <h4 style="margin: 0 0 4px 0; font-size: 13px; font-weight: bold; color: #0f172a;">${safeName}</h4>
+          <p style="margin: 0 0 4px 0; font-size: 11px; color: #475569;">${safeAddress}</p>
           <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 600; color: #0369a1; border-top: 1px solid #e2e8f0; padding-top: 4px;">
-            <span>★ ${hotel.starRating || 4} Stars</span>
-            <span>₹${hotel.pricePerNight?.toLocaleString('en-IN') || '4,000'}/night</span>
+            <span>★ ${safeRating} Stars</span>
+            <span>${currencySymbol}${safePrice}/night</span>
           </div>
         </div>
       `;
@@ -105,9 +153,9 @@ export const MapTab: React.FC<MapTabProps> = ({
       L.marker(latLng, { icon: hotelIcon }).bindPopup(popupContent).addTo(map);
     });
 
-    // 2. Plot Attraction / Activity Markers (Color-coded circles)
+    // 2. Plot Attraction / Activity Markers
     allActivities.forEach(({ activity, dayNumber }) => {
-      const latLng = L.latLng(activity.latitude, activity.longitude);
+      const latLng = L.latLng(activity.latitude!, activity.longitude!);
       bounds.extend(latLng);
 
       let pinColor = '#14b8a6'; // teal default
@@ -130,16 +178,24 @@ export const MapTab: React.FC<MapTabProps> = ({
         popupAnchor: [0, -12]
       });
 
+      // Escape all dynamic activity fields
+      const safeTitle = escapeHtml(activity.title);
+      const safeLoc = escapeHtml(activity.locationName);
+      const safeCat = escapeHtml(activity.category);
+      const safeTimeSlot = escapeHtml(activity.timeSlot);
+      const costNum = Number(activity.estimatedCost) || 0;
+      const safeCost = costNum > 0 ? `${currencySymbol}${costNum.toLocaleString('en-IN')}` : 'Free Entry';
+
       const popupContent = `
         <div style="font-family: sans-serif; min-width: 180px; padding: 2px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <span style="font-size: 10px; font-weight: 700; color: ${pinColor}; text-transform: uppercase;">Day ${dayNumber} • ${activity.timeSlot}</span>
-            <span style="font-size: 10px; background: #f1f5f9; padding: 2px 4px; border-radius: 4px; color: #475569;">${activity.category}</span>
+            <span style="font-size: 10px; font-weight: 700; color: ${pinColor}; text-transform: uppercase;">Day ${dayNumber} • ${safeTimeSlot}</span>
+            <span style="font-size: 10px; background: #f1f5f9; padding: 2px 4px; border-radius: 4px; color: #475569;">${safeCat}</span>
           </div>
-          <h4 style="margin: 0 0 4px 0; font-size: 12px; font-weight: bold; color: #0f172a;">${activity.title}</h4>
-          <p style="margin: 0 0 6px 0; font-size: 11px; color: #64748b; line-height: 1.3;">${activity.locationName}</p>
+          <h4 style="margin: 0 0 4px 0; font-size: 12px; font-weight: bold; color: #0f172a;">${safeTitle}</h4>
+          <p style="margin: 0 0 6px 0; font-size: 11px; color: #64748b; line-height: 1.3;">${safeLoc}</p>
           <div style="font-size: 11px; font-weight: 600; color: #059669; border-top: 1px solid #e2e8f0; padding-top: 4px;">
-            Est. Cost: ${activity.estimatedCost > 0 ? `₹${activity.estimatedCost.toLocaleString('en-IN')}` : 'Free Entry'}
+            Est. Cost: ${safeCost}
           </div>
         </div>
       `;
@@ -156,7 +212,7 @@ export const MapTab: React.FC<MapTabProps> = ({
       map.remove();
       mapInstanceRef.current = null;
     };
-  }, [allActivities.length, hotels.length, destinationCoords?.lat, destinationCoords?.lng]);
+  }, [dataFingerprint, canRenderMap]);
 
   return (
     <div className="space-y-4">
@@ -207,14 +263,14 @@ export const MapTab: React.FC<MapTabProps> = ({
           className="bg-slate-900"
         />
 
-        {!hasPins && (
+        {!canRenderMap && (
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center p-6 text-center">
             <div className="w-12 h-12 rounded-2xl bg-teal-500/10 text-teal-400 flex items-center justify-center mb-3">
               <MapPin className="w-6 h-6" />
             </div>
             <h4 className="text-sm font-semibold text-white">Awaiting Inventory Discovery</h4>
             <p className="text-xs text-slate-400 mt-1 max-w-sm">
-              Your hotels and itinerary attractions will automatically render here with custom category pins once the agent completes research.
+              Your hotels and itinerary attractions will automatically render here with custom category pins once location coordinates are resolved.
             </p>
           </div>
         )}

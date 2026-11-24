@@ -18,54 +18,100 @@ export interface BudgetOptimizerInput {
 
 export function optimizeBudget(input: BudgetOptimizerInput): BudgetOptimizationResult {
   const currency = input.currency || 'INR';
-  const targetBudget = Number(input.targetBudget) || 50000;
-  const totalDays = Math.max(1, input.totalDays || 1);
 
-  // 1. Calculate Flights Cost (best available flight offer)
+  // 1. Sanitize and validate inputs
+  const targetBudget = Math.max(0, isNaN(Number(input.targetBudget)) ? 50000 : Number(input.targetBudget));
+  const totalDays = Math.max(1, Math.floor(Number(input.totalDays)) || 1);
+  const travelers = Math.max(1, Math.floor(Number(input.travelers)) || 1);
+
+  // 5-day trip represents 4 hotel nights; 1-day trip is 1 day-use/night minimum
+  const nights = Math.max(1, totalDays > 1 ? totalDays - 1 : 1);
+
+  // 2. Calculate Flights Cost (respecting pricing contract: totalPrice vs pricePerPerson * travelers)
   let flightsCost = 0;
   if (input.flightResults && input.flightResults.length > 0) {
-    const prices = input.flightResults.map((f) => Number(f.totalPrice)).filter((p) => !isNaN(p) && p > 0);
-    if (prices.length > 0) {
-      flightsCost = Math.min(...prices);
+    const validFlightCosts = input.flightResults
+      .map((f) => {
+        const rawTotal = Number(f.totalPrice);
+        const rawPerPerson = Number(f.pricePerPerson);
+
+        if (!isNaN(rawTotal) && rawTotal > 0) {
+          // If totalPrice equals pricePerPerson but travelers > 1, provider returned per-person in totalPrice
+          if (!isNaN(rawPerPerson) && rawPerPerson > 0 && rawTotal === rawPerPerson && travelers > 1) {
+            return rawPerPerson * travelers;
+          }
+          return rawTotal;
+        }
+
+        if (!isNaN(rawPerPerson) && rawPerPerson > 0) {
+          return rawPerPerson * travelers;
+        }
+
+        return 0;
+      })
+      .filter((cost) => cost > 0);
+
+    if (validFlightCosts.length > 0) {
+      flightsCost = Math.min(...validFlightCosts);
     }
   }
 
-  // 2. Calculate Hotels Cost (cheapest per night * totalDays)
+  // 3. Calculate Hotels Cost (prefer provider quoted stay totalPrice, or pricePerNight * nights)
   let hotelsCost = 0;
   if (input.hotelResults && input.hotelResults.length > 0) {
-    const nightPrices = input.hotelResults
-      .map((h) => Number(h.pricePerNight))
-      .filter((p) => !isNaN(p) && p > 0);
-    if (nightPrices.length > 0) {
-      const minPerNight = Math.min(...nightPrices);
-      hotelsCost = minPerNight * totalDays;
-    } else {
-      const totalPrices = input.hotelResults
-        .map((h) => Number(h.totalPrice))
-        .filter((p) => !isNaN(p) && p > 0);
-      if (totalPrices.length > 0) {
-        hotelsCost = Math.min(...totalPrices);
-      }
+    const validHotelCosts = input.hotelResults
+      .map((h) => {
+        const rawTotal = Number(h.totalPrice);
+        const rawPerNight = Number(h.pricePerNight);
+
+        // If provider quoted full stay totalPrice
+        if (!isNaN(rawTotal) && rawTotal > 0) {
+          // If totalPrice equals pricePerNight but nights > 1, totalPrice was per-night
+          if (!isNaN(rawPerNight) && rawPerNight > 0 && rawTotal === rawPerNight && nights > 1) {
+            return rawPerNight * nights;
+          }
+          return rawTotal;
+        }
+
+        // Fallback to nightly rate * actual nights (e.g. 5 days = 4 nights)
+        if (!isNaN(rawPerNight) && rawPerNight > 0) {
+          return rawPerNight * nights;
+        }
+
+        return 0;
+      })
+      .filter((cost) => cost > 0);
+
+    if (validHotelCosts.length > 0) {
+      hotelsCost = Math.min(...validHotelCosts);
     }
   }
 
-  // 3. Calculate Activities Cost
+  // 4. Calculate Activities Cost (deduplicated to prevent accidental double-counting)
   let activitiesCost = 0;
   if (input.attractionResults && input.attractionResults.length > 0) {
+    const seenAttractions = new Set<string>();
+
     activitiesCost = input.attractionResults.reduce((sum, a) => {
-      const cost = Number(a.estimatedCost) || 0;
+      const dedupeKey = (a.title || '').trim().toLowerCase() + '::' + (a.locationName || '').trim().toLowerCase();
+      if (seenAttractions.has(dedupeKey)) {
+        return sum; // Skip duplicate attraction
+      }
+      seenAttractions.add(dedupeKey);
+
+      const cost = Math.max(0, Number(a.estimatedCost) || 0);
       return sum + cost;
     }, 0);
   }
 
-  // 4. Subtotal & 10% Contingency Buffer
+  // 5. Total Quoted Inventory & 10% Contingency Buffer
   const totalQuotedInventory = flightsCost + hotelsCost + activitiesCost;
   const contingencyBuffer = Math.round(totalQuotedInventory * 0.10);
   const totalProjectedSpend = totalQuotedInventory + contingencyBuffer;
 
-  // 5. Surplus / Deficit & Status
+  // 6. Surplus / Deficit & 5% Classification Tolerance
   const remainingSurplusOrDeficit = targetBudget - totalProjectedSpend;
-  const threshold = targetBudget * 0.05; // 5% tolerance
+  const threshold = targetBudget * 0.05; // Strict 5% tolerance
 
   let status: 'OPTIMAL' | 'UNDER_BUDGET' | 'OVER_BUDGET';
   if (remainingSurplusOrDeficit < -threshold) {
@@ -76,7 +122,7 @@ export function optimizeBudget(input: BudgetOptimizerInput): BudgetOptimizationR
     status = 'OPTIMAL';
   }
 
-  // 6. Category Breakdown
+  // 7. Category Breakdown
   const denominator = totalProjectedSpend > 0 ? totalProjectedSpend : targetBudget;
   const categoryBreakdown: BudgetCategoryAllocation[] = [
     {
@@ -101,7 +147,7 @@ export function optimizeBudget(input: BudgetOptimizerInput): BudgetOptimizationR
     }
   ];
 
-  // 7. Dynamic Recommendations
+  // 8. Dynamic Actionable Recommendations
   const recommendations: string[] = [];
   if (status === 'OVER_BUDGET') {
     const deficitAbs = Math.abs(remainingSurplusOrDeficit);
@@ -114,7 +160,7 @@ export function optimizeBudget(input: BudgetOptimizerInput): BudgetOptimizationR
     if (hotelsCost > 0) {
       recommendations.push('Opt for budget-friendly 3-star lodging or boutique homestays to reduce nightly accommodation rates.');
     }
-    recommendations.push('Consider reducing trip duration or prioritizing free public beaches and cultural sights.');
+    recommendations.push('Consider reducing trip duration or prioritizing free public attractions and beaches.');
   } else if (status === 'UNDER_BUDGET') {
     recommendations.push(
       `You have a comfortable surplus of ${currency} ${remainingSurplusOrDeficit.toLocaleString('en-IN')}.`
